@@ -2,6 +2,7 @@ package asset
 
 import (
 	"context"
+	"errors" // Added for errors.Is
 	"fmt"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/hypersdk/chain/chaintest"
 	"github.com/ava-labs/hypersdk/codec"
+	"github.com/ava-labs/hypersdk/state" // Added for state.Immutable
 	"github.com/stretchr/testify/require"
 )
 
@@ -201,6 +203,104 @@ func TestBurnShares_Success_BurnAll(t *testing.T) {
 		require.Equal(uint64(0), balance, "Balance should be 0 after burning all shares")
 	}
 }
+
+// getNextAssetNonce is a helper to read the next asset nonce from state for testing.
+// It assumes the nonce is stored as a uint64.
+func getNextAssetNonce(ctx context.Context, reader state.Immutable) (uint64, error) {
+	nonceBytes, err := reader.GetValue(ctx, []byte{NextAssetNonceKey})
+	if err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			// If not found, it means the nonce hasn't been initialized.
+			// DefineNewAsset should handle this by starting at an initial value (e.g., 0 or 1).
+			return 0, nil 
+		}
+		return 0, err
+	}
+	if len(nonceBytes) == 0 {
+		// This case should ideally not happen if GetValue returns ErrNotFound for missing keys.
+		// An empty byte slice for an existing key is an invalid state for the nonce.
+		return 0, fmt.Errorf("nextAssetNonceKey has empty value, expected non-empty byte slice for nonce")
+	}
+	// Ensure there are enough bytes for a uint64.
+	// Note: hypersdk's codec.Uint64Len is not exported, but it's typically 8.
+	if len(nonceBytes) < 8 { // Using 8 directly for uint64 size
+		return 0, fmt.Errorf("nonce byte slice too short: got %d, want at least %d", len(nonceBytes), 8)
+	}
+
+	packer := codec.NewReader(nonceBytes, 8) // Limit read to uint64 size
+	val := packer.UnpackUint64(true) // true for required
+	if err := packer.Err(); err != nil {
+		return 0, fmt.Errorf("failed to unpack nonce: %w", err)
+	}
+	return val, nil
+}
+
+func TestDefineNewAsset_SuccessAndUniqueness(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	mu := chaintest.NewInMemoryStore()
+
+	creatorAddr1 := codec.Address{0xC1, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13}
+	name1 := "Test Asset One"
+	symbol1 := "TA1"
+	metadata1 := []byte("metadata for asset one")
+
+	// Initial check: nonce should not exist or be 0.
+	// The DefineNewAsset function will be responsible for initializing it if it doesn't exist.
+	currentNonce, err := getNextAssetNonce(ctx, mu)
+	require.NoError(err, "Getting initial nonce should not fail")
+	// Depending on implementation, initial nonce might be 0 if not found, or 1 after first use.
+	// Let's assume DefineNewAsset initializes to 0, uses it, then stores 1.
+	require.Equal(uint64(0), currentNonce, "Initial nonce should be 0 (as read by helper if not found)")
+
+	// 1. Define first asset
+	// Note: The current DefineNewAsset is a placeholder and will return an error.
+	// This test is written against the expected final behavior.
+	assetID1, errDef1 := DefineNewAsset(ctx, mu, creatorAddr1, name1, symbol1, metadata1, 0) // Added timestamp 0 for testing
+	
+	require.NoError(errDef1, "DefineNewAsset (1) should succeed")
+	require.NotEqual(ids.Empty, assetID1, "AssetID1 should not be empty")
+
+	// Verify stored definition for asset 1
+	retrievedDef1, errGet1 := GetAssetDefinition(ctx, mu, assetID1)
+	require.NoError(errGet1, "GetAssetDefinition (1) should succeed")
+	require.NotNil(retrievedDef1, "Retrieved definition 1 should not be nil")
+	require.Equal(creatorAddr1, retrievedDef1.Creator, "Creator for asset 1 mismatch")
+	require.Equal(name1, retrievedDef1.Name, "Name for asset 1 mismatch")
+	require.Equal(symbol1, retrievedDef1.Symbol, "Symbol for asset 1 mismatch")
+	require.Equal(metadata1, retrievedDef1.Metadata, "Metadata for asset 1 mismatch")
+
+	// Check nonce after first definition (e.g., if it starts at 0, used, then becomes 1)
+	nonceAfter1, errNonce1 := getNextAssetNonce(ctx, mu)
+	require.NoError(errNonce1)
+	require.Equal(uint64(1), nonceAfter1, "Nonce should be 1 after first asset definition")
+
+	// 2. Define second asset
+	creatorAddr2 := codec.Address{0xC2, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13}
+	name2 := "Test Asset Two"
+	symbol2 := "TA2"
+	metadata2 := []byte("metadata for asset two")
+
+	assetID2, errDef2 := DefineNewAsset(ctx, mu, creatorAddr2, name2, symbol2, metadata2, 1) // Added timestamp 1 for testing
+	require.NoError(errDef2, "DefineNewAsset (2) should succeed")
+	require.NotEqual(ids.Empty, assetID2, "AssetID2 should not be empty")
+	require.NotEqual(assetID1, assetID2, "AssetID1 and AssetID2 should be different")
+
+	// Verify stored definition for asset 2
+	retrievedDef2, errGet2 := GetAssetDefinition(ctx, mu, assetID2)
+	require.NoError(errGet2, "GetAssetDefinition (2) should succeed")
+	require.NotNil(retrievedDef2, "Retrieved definition 2 should not be nil")
+	require.Equal(creatorAddr2, retrievedDef2.Creator, "Creator for asset 2 mismatch")
+	require.Equal(name2, retrievedDef2.Name, "Name for asset 2 mismatch")
+	require.Equal(symbol2, retrievedDef2.Symbol, "Symbol for asset 2 mismatch")
+	require.Equal(metadata2, retrievedDef2.Metadata, "Metadata for asset 2 mismatch")
+	
+	// Check nonce after second definition
+	nonceAfter2, errNonce2 := getNextAssetNonce(ctx, mu)
+	require.NoError(errNonce2)
+	require.Equal(uint64(2), nonceAfter2, "Nonce should be 2 after second asset definition")
+}
+
 
 func TestBurnShares_Error_InsufficientBalance(t *testing.T) {
 	require := require.New(t)

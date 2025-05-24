@@ -1,8 +1,8 @@
 package actions
 
 import (
+	"github.com/chokosabe/predictionvm/escrow"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 
@@ -13,6 +13,7 @@ import (
 	"github.com/ava-labs/hypersdk/codec"
 	"github.com/ava-labs/hypersdk/state"
 
+	"github.com/chokosabe/predictionvm/asset"
 	pvmconsts "github.com/chokosabe/predictionvm/consts" // Aliased
 )
 
@@ -119,6 +120,7 @@ var _ chain.Action = (*CreateMarket)(nil)
 type CreateMarket struct {
 	Question          string        `serialize:"true" json:"question"`           // Renamed from Description
 	CollateralAssetID ids.ID        `serialize:"true" json:"collateralAssetID"`  // Added
+	InitialLiquidity  uint64        `serialize:"true" json:"initialLiquidity"` // Added
 	ClosingTime       int64         `serialize:"true" json:"closingTime"`        // Renamed from EndTime
 	ResolutionTime    int64         `serialize:"true" json:"resolutionTime"`
 	OracleAddr        codec.Address `serialize:"true" json:"oracleAddr"`         // Added, replaces OracleType/Source/Parameters
@@ -128,6 +130,7 @@ type CreateMarket struct {
 func (cm *CreateMarket) MarshalCodec(p *codec.Packer) error {
 	p.PackString(cm.Question)
 	p.PackID(cm.CollateralAssetID)
+	p.PackUint64(cm.InitialLiquidity)
 	p.PackInt64(cm.ClosingTime)
 	p.PackInt64(cm.ResolutionTime)
 	p.PackAddress(cm.OracleAddr)
@@ -138,6 +141,7 @@ func (cm *CreateMarket) MarshalCodec(p *codec.Packer) error {
 func (cm *CreateMarket) UnmarshalCodec(p *codec.Packer) error {
 	cm.Question = p.UnpackString(true) // Assuming true for checkEOF
 	p.UnpackID(true, &cm.CollateralAssetID) // Assuming true for allowNilOrEmpty/checkEOF
+	cm.InitialLiquidity = p.UnpackUint64(true) // Assuming true for checkEOF
 	cm.ClosingTime = p.UnpackInt64(true) // Assuming true for checkEOF
 	cm.ResolutionTime = p.UnpackInt64(true) // Assuming true for checkEOF
 	p.UnpackAddress(&cm.OracleAddr)
@@ -191,6 +195,10 @@ func (cm *CreateMarket) StateKeys(actor codec.Address, actionID ids.ID) state.Ke
 	marketKeyString := string(marketKeyBytes) // state.Keys is map[string]Permissions
 	return state.Keys{
 		marketKeyString: state.Write, // Market key is read (to check existence) and then written
+		string(asset.NextAssetNonceKey): state.Write, // For DefineNewAsset
+		// Asset definition keys are dynamic and written by DefineNewAsset
+		string(escrow.GetEscrowKey(actionID, cm.CollateralAssetID)): state.Write, // For LockCollateral
+		string(asset.GetBalanceKey(actor, cm.CollateralAssetID)):    state.Write, // For LockCollateral (actor's balance)
 	}
 }
 
@@ -234,17 +242,22 @@ func (cm *CreateMarket) Execute(
 		return nil, ErrInvalidOracleAddress
 	}
 
-	// Generate YesAssetID
-	yesSeed := make([]byte, 0, ids.IDLen+len("YES"))
-	yesSeed = append(yesSeed, actionID[:]...)
-	yesSeed = append(yesSeed, []byte("YES")...)
-	yesAssetID := ids.ID(sha256.Sum256(yesSeed))
+	// Define YES and NO assets for the market
+	yesAssetName := cm.Question + " - YES"
+	yesAssetSymbol := fmt.Sprintf("M%.8sY", actionID.String())
+	yesAssetMetadata := []byte("YES share for market " + actionID.String())
+	yesAssetID, err := asset.DefineNewAsset(ctx, mu, actor, yesAssetName, yesAssetSymbol, yesAssetMetadata, uint64(timestamp))
+	if err != nil {
+		return nil, fmt.Errorf("failed to define YES asset: %w", err)
+	}
 
-	// Generate NoAssetID
-	noSeed := make([]byte, 0, ids.IDLen+len("NO"))
-	noSeed = append(noSeed, actionID[:]...)
-	noSeed = append(noSeed, []byte("NO")...)
-	noAssetID := ids.ID(sha256.Sum256(noSeed))
+	noAssetName := cm.Question + " - NO"
+	noAssetSymbol := fmt.Sprintf("M%.8sN", actionID.String())
+	noAssetMetadata := []byte("NO share for market " + actionID.String())
+	noAssetID, err := asset.DefineNewAsset(ctx, mu, actor, noAssetName, noAssetSymbol, noAssetMetadata, uint64(timestamp))
+	if err != nil {
+		return nil, fmt.Errorf("failed to define NO asset: %w", err)
+	}
 
 	market := &Market{ // Using the Market struct defined in this file
 		ID:                actionID,
@@ -260,10 +273,20 @@ func (cm *CreateMarket) Execute(
 
 	marketBytes := market.Bytes()
 	if err := mu.Insert(ctx, marketKey, marketBytes); err != nil { // Use Insert as per hypersdk v0.0.18
-		return nil, fmt.Errorf("failed to save market: %w", err)
+		return nil, fmt.Errorf("failed to save market %s: %w", market.ID, err)
 	}
 
-	return actionID[:], nil // Return the market ID (actionID) as a byte slice
+	// Lock initial liquidity from the creator into escrow
+	if err := escrow.LockCollateral(ctx, mu, market.ID, actor, cm.CollateralAssetID, cm.InitialLiquidity); err != nil {
+		// Attempt to remove the market if locking collateral fails. This is a best-effort cleanup.
+		// A more robust solution might involve transactional atomicity if the underlying state supports it.
+		if removeErr := mu.Remove(ctx, marketKey); removeErr != nil {
+			return nil, fmt.Errorf("failed to lock initial liquidity for market %s (and failed to remove market): %w (remove error: %v)", market.ID, err, removeErr)
+		}
+		return nil, fmt.Errorf("failed to lock initial liquidity for market %s (market removed): %w", market.ID, err)
+	}
+
+	return actionID[:], nil // Return actionID as success result ID (actionID) as a byte slice
 }
 
 // ValidRange defines the time range during which the action is valid.

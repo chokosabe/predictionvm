@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chokosabe/predictionvm/asset" // Added for SetAssetBalance
+
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/chain/chaintest"
@@ -148,11 +150,17 @@ func TestCreateMarket_Success(t *testing.T) {
 	// Define a valid CreateMarket action
 	createMarketAction := &actions.CreateMarket{
 		Question:          "Will event X occur by Y date?",
-		CollateralAssetID: collateralAssetPlaceholder, 
+		CollateralAssetID: collateralAssetPlaceholder,
+		InitialLiquidity:  100,
 		ClosingTime:       initialTimestamp + (60 * 60 * 24 * 7), // 7 days from now
 		ResolutionTime:    initialTimestamp + (60 * 60 * 24 * 8), // 8 days from now
 		OracleAddr:        codec.Address{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14},
 	}
+
+	// Set initial balance for the actor for the collateral asset
+	initialActorBalance := uint64(200)
+	err := asset.SetAssetBalance(ctx, mu, actorAddr, collateralAssetPlaceholder, initialActorBalance)
+	require.NoError(err, "Failed to set initial actor balance")
 
 	// Execute the action
 	output, err := createMarketAction.Execute(
