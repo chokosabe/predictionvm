@@ -168,8 +168,6 @@ func (cm *CreateMarket) Execute(
 		NoAssetID:         noAssetID,  // Generated
 		Creator:           actor,
 		ResolutionTime:    cm.ResolutionTime,
-		TotalYesShares:    0, // Will be managed by HybridAsset module
-		TotalNoShares:     0, // Will be managed by HybridAsset module
 	}
 
 	if err := storage.SetMarket(ctx, mu, market); err != nil {

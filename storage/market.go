@@ -18,22 +18,19 @@ import (
 type MarketStatus uint8
 
 const (
-	MarketStatus_Open          MarketStatus = 0 // Market is open for trading
-	MarketStatus_TradingClosed MarketStatus = 1 // Trading is closed, awaiting resolution
-	MarketStatus_ResolvedYes   MarketStatus = 2 // Market resolved as YES
-	MarketStatus_ResolvedNo    MarketStatus = 3 // Market resolved as NO
+	MarketStatus_Open     MarketStatus = 0 // Market is open for trading
+	MarketStatus_Locked   MarketStatus = 1 // Trading is closed, awaiting resolution (Spec: LOCKED)
+	MarketStatus_Resolved MarketStatus = 2 // Market has been resolved (Spec: RESOLVED)
 )
 
 func (ms MarketStatus) String() string {
 	switch ms {
 	case MarketStatus_Open:
 		return "Open"
-	case MarketStatus_TradingClosed:
-		return "TradingClosed"
-	case MarketStatus_ResolvedYes:
-		return "ResolvedYes"
-	case MarketStatus_ResolvedNo:
-		return "ResolvedNo"
+	case MarketStatus_Locked:
+		return "Locked"
+	case MarketStatus_Resolved:
+		return "Resolved"
 	default:
 		return fmt.Sprintf("UnknownMarketStatus:%d", ms)
 	}
@@ -86,14 +83,12 @@ type Market struct {
 	OracleAddr        codec.Address `serialize:"true" json:"oracleAddr"`               // Added, replaces OracleType/Source/Parameters
 	Status            MarketStatus  `serialize:"true" json:"status"`
 	ResolvedOutcome   OutcomeType   `serialize:"true" json:"resolvedOutcome"`
-	YesAssetID        ids.ID        `serialize:"true" json:"yesAssetID"`               // Added
-	NoAssetID         ids.ID        `serialize:"true" json:"noAssetID"`                // Added
+	YesAssetID        ids.ID        `serialize:"true" json:"yesAssetID"`
+	NoAssetID         ids.ID        `serialize:"true" json:"noAssetID"`
 
-	// Fields from previous version, kept for now or to be reviewed against full spec integration
-	Creator         codec.Address `serialize:"true" json:"creator"`
-	ResolutionTime  int64         `serialize:"true" json:"resolutionTime"` // Spec doesn't explicitly list this, but useful
-	TotalYesShares  uint64        `serialize:"true" json:"totalYesShares"`   // Will be derived from HybridAsset module later
-	TotalNoShares   uint64        `serialize:"true" json:"totalNoShares"`    // Will be derived from HybridAsset module later
+	// Additional useful fields (Creator might be moved later if strictly adhering to Spec 3.1 for this bucket)
+	Creator        codec.Address `serialize:"true" json:"creator"`
+	ResolutionTime int64         `serialize:"true" json:"resolutionTime"` // Time of resolution
 }
 
 // MarketKey generates the state key for a given market ID.

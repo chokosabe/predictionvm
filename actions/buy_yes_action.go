@@ -82,7 +82,7 @@ func (b *BuyYes) Execute(
 	// if market == nil {
 	// 	return nil, fmt.Errorf("%w: market %d not found", ErrMarketNotFound, b.MarketID)
 	// }
-	if market.Status == storage.MarketStatus_ResolvedYes || market.Status == storage.MarketStatus_ResolvedNo {
+	if market.Status == storage.MarketStatus_Resolved {
 		return nil, fmt.Errorf("%w: market %d is already resolved (status: %s)", ErrMarketInteraction, b.MarketID, market.Status.String())
 	}
 	// Removed IsCancelled check as MarketStatus does not have a direct 'Cancelled' state.
@@ -94,7 +94,7 @@ func (b *BuyYes) Execute(
 		// If it's TradingClosed, that also means new trades are not allowed.
 		return nil, fmt.Errorf("%w: market %d has ended or trading is closed (current: %d, end: %d, status: %s)", ErrMarketInteraction, b.MarketID, txTimestamp, market.ClosingTime, market.Status.String())
 	}
-	if market.Status == storage.MarketStatus_TradingClosed {
+	if market.Status == storage.MarketStatus_Locked { // Trading is locked
 		return nil, fmt.Errorf("%w: market %d trading is closed (status: %s)", ErrMarketInteraction, b.MarketID, market.Status.String())
 	}
 	if txTimestamp > market.ClosingTime {
@@ -145,14 +145,7 @@ func (b *BuyYes) Execute(
 		return nil, fmt.Errorf("failed to set new share balance %d for actor %s, market %d, type YES: %w", newShareBalance, actor.String(), b.MarketID, err)
 	}
 
-	// 6. Update market's total YES shares
-	// We use the 'market' variable fetched earlier in this Execute call.
-	// It's important that this 'market' instance is the one we want to modify and save.
-	market.TotalYesShares += b.Amount
-	if err := storage.SetMarket(ctx, mu, market); err != nil { // Pass the market object itself
-		// Potentially revert user's share balance and native token balance changes here for atomicity
-		return nil, fmt.Errorf("failed to update market %d total YES shares: %w", b.MarketID, err)
-	}
+	// TotalYesShares is now managed by the HybridAsset module, no direct update here.
 
 	// For now, return nil output and no error for success
 	return nil, nil

@@ -63,10 +63,10 @@ func (b *BuyNo) Execute(
 		}
 		return nil, fmt.Errorf("failed to get market %d: %w", b.MarketID, err)
 	}
-	if market.Status == storage.MarketStatus_ResolvedYes || market.Status == storage.MarketStatus_ResolvedNo {
+	if market.Status == storage.MarketStatus_Resolved {
 		return nil, fmt.Errorf("%w: market %d is already resolved (status: %s)", ErrMarketInteraction, b.MarketID, market.Status.String())
 	}
-	if market.Status == storage.MarketStatus_TradingClosed {
+	if market.Status == storage.MarketStatus_Locked {
 		return nil, fmt.Errorf("%w: market %d trading is closed (status: %s)", ErrMarketInteraction, b.MarketID, market.Status.String())
 	}
 	if txTimestamp > market.ClosingTime {
@@ -114,12 +114,7 @@ func (b *BuyNo) Execute(
 		return nil, fmt.Errorf("failed to set new NO share balance %d for actor %s, market %d: %w", newShareBalance, actor.String(), b.MarketID, err)
 	}
 
-	// 6. Update market's total NO shares
-	market.TotalNoShares += b.Amount
-	if err := storage.SetMarket(ctx, mu, market); err != nil {
-		// Consider reverting previous state changes (actor balance, share balance)
-		return nil, fmt.Errorf("failed to update market %d with new total NO shares: %w", b.MarketID, err)
-	}
+	// TotalNoShares is now managed by the HybridAsset module, no direct update here.
 
 	// TODO: Emit event for BuyNo action
 
