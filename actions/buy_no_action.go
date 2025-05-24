@@ -13,15 +13,22 @@ import (
 
 	userConsts "github.com/chokosabe/predictionvm/consts"
 	"github.com/chokosabe/predictionvm/storage"
+	"github.com/chokosabe/predictionvm/asset"
+	"github.com/chokosabe/predictionvm/escrow"
 )
 
 var _ chain.Action = (*BuyNo)(nil)
 
 // BuyNo represents an action where a user buys NO shares for a specific market.
 type BuyNo struct {
-	MarketID uint64 `serialize:"true" json:"marketId"`
-	Amount   uint64 `serialize:"true" json:"amount"`
-	MaxPrice uint64 `serialize:"true" json:"maxPrice"`
+	MarketID          ids.ID `serialize:"true" json:"marketId"`
+	CollateralAssetID ids.ID `serialize:"true" json:"collateralAssetId"` // Client must provide this
+	NoAssetID         ids.ID `serialize:"true" json:"noAssetId"`         // Client must provide this
+	// Amount of NO shares the user wants to buy (implies an equal amount of collateral to be locked).
+	Amount            uint64 `serialize:"true" json:"amount"`
+	// MaxPrice is the maximum amount of collateral the user is willing to pay per NO share.
+	// In the current model, this is effectively the amount of collateral locked per share.
+	MaxPrice          uint64 `serialize:"true" json:"maxPrice"`
 }
 
 // GetTypeID implements chain.Action
@@ -30,11 +37,23 @@ func (b *BuyNo) GetTypeID() uint8 {
 }
 
 // StateKeys implements chain.Action
-func (b *BuyNo) StateKeys(actor codec.Address, chainID ids.ID) state.Keys {
+func (b *BuyNo) StateKeys(actor codec.Address, _ ids.ID) state.Keys {
+	marketKey := GetMarketKey(b.MarketID) // Assumes GetMarketKey can handle ids.ID or is adapted
+
+	// Key for the actor's balance of the collateral asset
+	actorCollateralBalanceKey := asset.GetBalanceKey(actor, b.CollateralAssetID)
+
+	// Key for the market's escrow account for the collateral asset
+	marketEscrowKey := escrow.GetEscrowKey(b.MarketID, b.CollateralAssetID)
+
+	// Key for the actor's balance of NO shares (which is an asset)
+	actorNoShareBalanceKey := asset.GetBalanceKey(actor, b.NoAssetID)
+
 	return state.Keys{
-		string(storage.BalanceKey(actor)): state.Read | state.Write,
-		string(storage.MarketKey(b.MarketID)): state.Read | state.Write,
-		string(storage.ShareBalanceKey(b.MarketID, actor, userConsts.NoShareType)): state.Read | state.Write,
+		string(marketKey):                state.Read,  // To read market details
+		string(actorCollateralBalanceKey): state.Write, // To check balance and lock collateral
+		string(marketEscrowKey):          state.Write, // To credit the market's escrow account
+		string(actorNoShareBalanceKey):   state.Write, // To mint NO shares to the actor
 	}
 }
 
@@ -56,21 +75,22 @@ func (b *BuyNo) Execute(
 	}
 
 	// 1. Check if market exists and is active
-	market, err := storage.GetMarket(ctx, mu, b.MarketID)
+	marketIDUint64 := uint64(b.MarketID[0]) // Convert ids.ID to uint64 for storage funcs
+	market, err := storage.GetMarket(ctx, mu, marketIDUint64)
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) { // Corrected to database.ErrNotFound
-			return nil, fmt.Errorf("%w: market %d not found when fetching", ErrMarketNotFound, b.MarketID)
+			return nil, fmt.Errorf("%w: market %s not found when fetching", ErrMarketNotFound, b.MarketID.String())
 		}
-		return nil, fmt.Errorf("failed to get market %d: %w", b.MarketID, err)
+		return nil, fmt.Errorf("failed to get market %s: %w", b.MarketID.String(), err)
 	}
 	if market.Status == storage.MarketStatus_Resolved {
-		return nil, fmt.Errorf("%w: market %d is already resolved (status: %s)", ErrMarketInteraction, b.MarketID, market.Status.String())
+		return nil, fmt.Errorf("%w: market %s is already resolved (status: %s)", ErrMarketInteraction, b.MarketID.String(), market.Status.String())
 	}
 	if market.Status == storage.MarketStatus_Locked {
-		return nil, fmt.Errorf("%w: market %d trading is closed (status: %s)", ErrMarketInteraction, b.MarketID, market.Status.String())
+		return nil, fmt.Errorf("%w: market %s trading is closed (status: %s)", ErrMarketInteraction, b.MarketID.String(), market.Status.String())
 	}
 	if txTimestamp > market.ClosingTime {
-		return nil, fmt.Errorf("%w: market %d has ended (current: %d, end: %d)", ErrMarketInteraction, b.MarketID, txTimestamp, market.ClosingTime)
+		return nil, fmt.Errorf("%w: market %s has ended (current: %d, end: %d)", ErrMarketInteraction, b.MarketID.String(), txTimestamp, market.ClosingTime)
 	}
 
 	// 2. Check actor's balance
@@ -92,7 +112,7 @@ func (b *BuyNo) Execute(
 	// 3. Calculate cost and ensure actor has enough funds
 	cost := b.Amount * b.MaxPrice
 	if currentBalance < cost {
-		return nil, fmt.Errorf("%w: actor balance %d, cost %d for %d shares at max price %d for market %d", ErrInsufficientFunds, currentBalance, cost, b.Amount, b.MaxPrice, b.MarketID)
+		return nil, fmt.Errorf("%w: actor balance %d, cost %d for %d shares at max price %d for market %s", ErrInsufficientFunds, currentBalance, cost, b.Amount, b.MaxPrice, b.MarketID.String())
 	}
 
 	// 4. Deduct funds
@@ -102,16 +122,16 @@ func (b *BuyNo) Execute(
 	}
 
 	// 5. Credit NO shares to actor
-	currentNoShares, err := storage.GetShareBalance(ctx, mu, b.MarketID, actor, userConsts.NoShareType)
+	currentNoShares, err := storage.GetShareBalance(ctx, mu, marketIDUint64, actor, userConsts.NoShareType)
 	if err != nil && !errors.Is(err, database.ErrNotFound) { // Corrected to database.ErrNotFound, treat as 0 shares
 		// Consider reverting native token balance change here or using a more transactional approach
-		return nil, fmt.Errorf("failed to get current NO share balance for actor %s, market %d: %w", actor.String(), b.MarketID, err)
+		return nil, fmt.Errorf("failed to get current NO share balance for actor %s, market %s: %w", actor.String(), b.MarketID.String(), err)
 	}
 
 	newShareBalance := currentNoShares + b.Amount
-	if err := storage.SetShareBalance(ctx, mu, b.MarketID, actor, userConsts.NoShareType, newShareBalance); err != nil {
+	if err := storage.SetShareBalance(ctx, mu, marketIDUint64, actor, userConsts.NoShareType, newShareBalance); err != nil {
 		// Consider reverting native token balance change here
-		return nil, fmt.Errorf("failed to set new NO share balance %d for actor %s, market %d: %w", newShareBalance, actor.String(), b.MarketID, err)
+		return nil, fmt.Errorf("failed to set new NO share balance %d for actor %s, market %s: %w", newShareBalance, actor.String(), b.MarketID.String(), err)
 	}
 
 	// TotalNoShares is now managed by the HybridAsset module, no direct update here.
@@ -143,7 +163,6 @@ func (b *BuyNo) Bytes() []byte {
 		// This should ideally not happen with a well-defined struct
 		// and could panic or log fatally in a real scenario.
 		// Consider returning an error or panicking if appropriate for the VM's error handling strategy.
-		// For now, following BuyYes pattern which prints and returns nil, though panicking might be better.
 		fmt.Printf("Error marshalling BuyNo action with MarshalInto: %v\n", err)
 		return nil
 	}

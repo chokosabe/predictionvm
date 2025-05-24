@@ -31,7 +31,10 @@ func TestBuyNo_Execute_Success(t *testing.T) {
 
 	// Test Data
 	senderAddr := codec.Address{0x01}
-	marketID := uint64(1)
+	marketID_uint64 := uint64(1)
+	marketID_ids := ids.ID{byte(marketID_uint64)} // Simple conversion for test
+	collateralAssetID_test := ids.ID{0xA1, 0xA2}    // Test collateral asset ID
+	noAssetID_test := ids.ID{0xC1, 0xC2}         // Test NO asset ID
 	initialUserBalance := uint64(1000)
 	amountToBuy := uint64(10)
 	collateralNeeded := amountToBuy
@@ -43,25 +46,27 @@ func TestBuyNo_Execute_Success(t *testing.T) {
 
 	// 2. Create and store a market
 	market := &storage.Market{
-		ID:                marketID,
+		ID:                marketID_uint64, // storage.Market uses uint64 for ID
 		Question:          "Test Market for BuyNo",
-		CollateralAssetID: ids.Empty,
+		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       200, // Market closes at time 200
 		OracleAddr:        codec.EmptyAddress,
 		Status:            storage.MarketStatus_Open,
 		Creator:           codec.Address{0x02}, // Different from sender
 		ResolutionTime:    300,
-		YesAssetID:        ids.Empty,
-		NoAssetID:         ids.Empty,
+		YesAssetID:        ids.ID{0xB1, 0xB2}, // Example YesAssetID, consistent with BuyYes tests
+		NoAssetID:         noAssetID_test,
 	}
 	err = storage.SetMarket(ctx, mu, market)
 	require.NoError(err)
 
 	// 3. Create BuyNo Action
 	buyNoAction := &BuyNo{
-		MarketID: marketID,
-		Amount:   amountToBuy,
-		MaxPrice: maxPriceOrCollateral,
+		MarketID:          marketID_ids,
+		CollateralAssetID: collateralAssetID_test,
+		NoAssetID:         noAssetID_test,
+		Amount:            amountToBuy,
+		MaxPrice:          maxPriceOrCollateral,
 	}
 
 	// 4. Execute the Action
@@ -84,12 +89,12 @@ func TestBuyNo_Execute_Success(t *testing.T) {
 	require.Equal(expectedFinalUserBalance, finalUserBalance, "User balance should be correctly deducted")
 
 	// Check user's NO share balance
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
 	require.NoError(getShareErr)
 	require.Equal(amountToBuy, userNoShares, "User should have the correct amount of NO shares")
 
 	// Check market's total NO shares
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 	// Ensure TotalYesShares remains unchanged
@@ -111,7 +116,10 @@ func TestBuyNo_Execute_Error_MarketNotFound(t *testing.T) {
 
 	// Test Data
 	senderAddr := codec.Address{0x01}
-	nonExistentMarketID := uint64(999)
+	nonExistentMarketID_uint64 := uint64(999)
+	nonExistentMarketID_ids := ids.ID{byte(nonExistentMarketID_uint64)} // Simple conversion for test
+	collateralAssetID_test := ids.ID{0xA1, 0xA2}    // Test collateral asset ID
+	noAssetID_test := ids.ID{0xC1, 0xC2}         // Test NO asset ID
 	initialUserBalance := uint64(1000)
 	amountToBuy := uint64(10)
 	maxPrice := uint64(50)
@@ -122,9 +130,11 @@ func TestBuyNo_Execute_Error_MarketNotFound(t *testing.T) {
 
 	// 2. Create BuyNo Action for a non-existent market
 	buyNoAction := &BuyNo{
-		MarketID: nonExistentMarketID,
-		Amount:   amountToBuy,
-		MaxPrice: maxPrice,
+		MarketID:          nonExistentMarketID_ids,
+		CollateralAssetID: collateralAssetID_test,
+		NoAssetID:         noAssetID_test,
+		Amount:            amountToBuy,
+		MaxPrice:          maxPrice,
 	}
 
 	// 3. Execute the Action
@@ -135,7 +145,7 @@ func TestBuyNo_Execute_Error_MarketNotFound(t *testing.T) {
 	// 4. Assertions
 	require.Error(err, "Expected an error for market not found")
 	require.ErrorIs(err, ErrMarketNotFound, "Error should be ErrMarketNotFound")
-	require.Contains(err.Error(), fmt.Sprintf("market %d not found when fetching", nonExistentMarketID), "Error message mismatch")
+	require.Contains(err.Error(), fmt.Sprintf("market %s not found when fetching", nonExistentMarketID_ids.String()), "Error message mismatch")
 	require.Nil(output, "Output should be nil on error")
 
 	// Check user's native token balance (should be unchanged)
@@ -144,7 +154,7 @@ func TestBuyNo_Execute_Error_MarketNotFound(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's NO share balance (should be 0, and fetching might error if key never created)
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, nonExistentMarketID, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, nonExistentMarketID_uint64, senderAddr, userConsts.NoShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares if key doesn't exist")
 		require.Equal(uint64(0), userNoShares, "User NO shares should be 0 if error is ErrNotFound")
@@ -166,27 +176,32 @@ func TestBuyNo_Execute_Error_MarketResolved(t *testing.T) {
 
 	// Test Data
 	senderAddr := codec.Address{0x01}
-	marketID := uint64(1)
+	marketID_uint64 := uint64(1)
+	marketID_ids := ids.ID{byte(marketID_uint64)} // Simple conversion for test
+	collateralAssetID_test := ids.ID{0xA1, 0xA2}    // Test collateral asset ID
+	noAssetID_test := ids.ID{0xC1, 0xC2}         // Test NO asset ID
 	initialUserBalance := uint64(1000)
 	amountToBuy := uint64(10)
 	maxPrice := uint64(50)
 
 	marketBase := &storage.Market{
-		ID:                marketID,
+		ID:                marketID_uint64, // storage.Market uses uint64 for ID
 		Question:          "Test Market Resolved",
-		CollateralAssetID: ids.Empty,
+		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       200,
 		OracleAddr:        codec.EmptyAddress,
 		Creator:           codec.Address{0x02},
 		ResolutionTime:    300,
-		YesAssetID:        ids.Empty,
-		NoAssetID:         ids.Empty,
+		YesAssetID:        ids.ID{0xB1, 0xB2}, // Example YesAssetID
+		NoAssetID:         noAssetID_test,
 	}
 
 	buyNoAction := &BuyNo{
-		MarketID: marketID,
-		Amount:   amountToBuy,
-		MaxPrice: maxPrice,
+		MarketID:          marketID_ids,
+		CollateralAssetID: collateralAssetID_test,
+		NoAssetID:         noAssetID_test,
+		Amount:            amountToBuy,
+		MaxPrice:          maxPrice,
 	}
 
 	testCases := []struct {
@@ -221,7 +236,7 @@ func TestBuyNo_Execute_Error_MarketResolved(t *testing.T) {
 			// 4. Assertions
 			require.Error(err, "Expected an error for resolved market")
 			require.ErrorIs(err, ErrMarketInteraction, "Error should be ErrMarketInteraction")
-			require.Contains(err.Error(), fmt.Sprintf("market %d is already resolved", marketID), "Error message mismatch")
+			require.Contains(err.Error(), fmt.Sprintf("market %s is already resolved", marketID_ids.String()), "Error message mismatch")
 			require.Nil(output, "Output should be nil on error")
 
 			// Check user's native token balance (should be unchanged)
@@ -230,7 +245,7 @@ func TestBuyNo_Execute_Error_MarketResolved(t *testing.T) {
 			require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 			// Check user's NO share balance (should be 0)
-			userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID, senderAddr, userConsts.NoShareType)
+			userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
 			if getShareErr != nil {
 				require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 				require.Equal(uint64(0), userNoShares)
@@ -239,7 +254,7 @@ func TestBuyNo_Execute_Error_MarketResolved(t *testing.T) {
 			}
 
 			// Check market's total NO shares (should be unchanged)
-			updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
+			updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
 			require.NoError(getMarketErr)
 			require.NotNil(updatedMarket)
 				})
@@ -260,7 +275,10 @@ func TestBuyNo_Execute_Error_InsufficientFunds(t *testing.T) {
 
 	// Test Data
 	senderAddr := codec.Address{0x01}
-	marketID := uint64(1)
+	marketID_uint64 := uint64(1)
+	marketID_ids := ids.ID{byte(marketID_uint64)} // Simple conversion for test
+	collateralAssetID_test := ids.ID{0xA1, 0xA2}    // Test collateral asset ID
+	noAssetID_test := ids.ID{0xC1, 0xC2}         // Test NO asset ID
 	initialUserBalance := uint64(49) // Cost will be 10 * 5 = 50. Balance is 49.
 	amountToBuy := uint64(10)
 	maxPrice := uint64(5)
@@ -271,25 +289,27 @@ func TestBuyNo_Execute_Error_InsufficientFunds(t *testing.T) {
 
 	// 2. Create and store an open market
 	market := &storage.Market{
-		ID:                marketID,
+		ID:                marketID_uint64, // storage.Market uses uint64 for ID
 		Question:          "Test Market Insufficient Funds",
-		CollateralAssetID: ids.Empty,
+		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       200,
 		OracleAddr:        codec.EmptyAddress,
 		Status:            storage.MarketStatus_Open,
 		Creator:           codec.Address{0x02},
 		ResolutionTime:    300,
-		YesAssetID:        ids.Empty,
-		NoAssetID:         ids.Empty,
+		YesAssetID:        ids.ID{0xB1, 0xB2}, // Example YesAssetID
+		NoAssetID:         noAssetID_test,
 	}
 	err = storage.SetMarket(ctx, mu, market)
 	require.NoError(err)
 
 	// 3. Create BuyNo Action
 	buyNoAction := &BuyNo{
-		MarketID: marketID,
-		Amount:   amountToBuy,
-		MaxPrice: maxPrice,
+		MarketID:          marketID_ids,
+		CollateralAssetID: collateralAssetID_test,
+		NoAssetID:         noAssetID_test,
+		Amount:            amountToBuy,
+		MaxPrice:          maxPrice,
 	}
 
 	// 4. Execute the Action
@@ -301,7 +321,8 @@ func TestBuyNo_Execute_Error_InsufficientFunds(t *testing.T) {
 	require.Error(err, "Expected an error for insufficient funds")
 	require.ErrorIs(err, ErrInsufficientFunds, "Error should be ErrInsufficientFunds")
 	cost := amountToBuy * maxPrice
-	require.Contains(err.Error(), fmt.Sprintf("actor balance %d, cost %d", initialUserBalance, cost), "Error message mismatch")
+	// Error message now includes market ID string: "actor balance %d, cost %d for %d shares at max price %d for market %s"
+	require.Contains(err.Error(), fmt.Sprintf("actor balance %d, cost %d for %d shares at max price %d for market %s", initialUserBalance, cost, amountToBuy, maxPrice, marketID_ids.String()), "Error message mismatch")
 	require.Nil(output, "Output should be nil on error")
 
 	// Check user's native token balance (should be unchanged)
@@ -310,7 +331,7 @@ func TestBuyNo_Execute_Error_InsufficientFunds(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's NO share balance (should be 0)
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userNoShares)
@@ -319,7 +340,7 @@ func TestBuyNo_Execute_Error_InsufficientFunds(t *testing.T) {
 	}
 
 	// Check market's total NO shares (should be unchanged)
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }
@@ -338,14 +359,19 @@ func TestBuyNo_Execute_Error_AmountZero(t *testing.T) {
 
 	// Test Data
 	senderAddr := codec.Address{0x01}
-	marketID := uint64(1)
+	marketID_uint64 := uint64(1)
+	marketID_ids := ids.ID{byte(marketID_uint64)} // Simple conversion for test
+	collateralAssetID_test := ids.ID{0xA1, 0xA2}    // Test collateral asset ID
+	noAssetID_test := ids.ID{0xC1, 0xC2}         // Test NO asset ID
 	// initialUserBalance and market setup are minimal as this error occurs before their use.
 
 	// Create BuyNo Action with Amount = 0
 	buyNoAction := &BuyNo{
-		MarketID: marketID,
-		Amount:   0, // Amount is zero
-		MaxPrice: uint64(50),
+		MarketID:          marketID_ids,
+		CollateralAssetID: collateralAssetID_test,
+		NoAssetID:         noAssetID_test,
+		Amount:            0, // Amount is zero
+		MaxPrice:          uint64(50),
 	}
 
 	// Execute the Action
@@ -376,13 +402,18 @@ func TestBuyNo_Execute_Error_MaxPriceZero(t *testing.T) {
 
 	// Test Data
 	senderAddr := codec.Address{0x01}
-	marketID := uint64(1)
+	marketID_uint64 := uint64(1)
+	marketID_ids := ids.ID{byte(marketID_uint64)} // Simple conversion for test
+	collateralAssetID_test := ids.ID{0xA1, 0xA2}    // Test collateral asset ID
+	noAssetID_test := ids.ID{0xC1, 0xC2}         // Test NO asset ID
 
 	// Create BuyNo Action with MaxPrice = 0
 	buyNoAction := &BuyNo{
-		MarketID: marketID,
-		Amount:   uint64(10),
-		MaxPrice: 0, // MaxPrice is zero
+		MarketID:          marketID_ids,
+		CollateralAssetID: collateralAssetID_test,
+		NoAssetID:         noAssetID_test,
+		Amount:            uint64(10),
+		MaxPrice:          0, // MaxPrice is zero
 	}
 
 	// Execute the Action
@@ -410,32 +441,37 @@ func TestBuyNo_Execute_Error_NoBalanceRecord_InsufficientFunds(t *testing.T) {
 
 	// Test Data
 	senderAddr := codec.Address{0x01} // Actor with no balance record
-	marketID := uint64(1)
+	marketID_uint64 := uint64(1)
+	marketID_ids := ids.ID{byte(marketID_uint64)} // Simple conversion for test
+	collateralAssetID_test := ids.ID{0xA1, 0xA2}    // Test collateral asset ID
+	noAssetID_test := ids.ID{0xC1, 0xC2}         // Test NO asset ID
 	amountToBuy := uint64(10)
 	maxPrice := uint64(5)
 	// No initial balance is set for senderAddr
 
 	// 1. Create and store an open market (needed for the action to proceed past market checks)
 	market := &storage.Market{
-		ID:                marketID,
+		ID:                marketID_uint64,
 		Question:          "Test Market No Balance Record",
-		CollateralAssetID: ids.Empty,
+		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       200,
 		OracleAddr:        codec.EmptyAddress,
 		Status:            storage.MarketStatus_Open,
 		Creator:           codec.Address{0x02},
 		ResolutionTime:    300,
-		YesAssetID:        ids.Empty,
-		NoAssetID:         ids.Empty,
+		YesAssetID:        ids.ID{0xB1, 0xB2}, // Example YesAssetID
+		NoAssetID:         noAssetID_test,
 	}
 	err := storage.SetMarket(ctx, mu, market)
 	require.NoError(err)
 
 	// 2. Create BuyNo Action
 	buyNoAction := &BuyNo{
-		MarketID: marketID,
-		Amount:   amountToBuy,
-		MaxPrice: maxPrice,
+		MarketID:          marketID_ids,
+		CollateralAssetID: collateralAssetID_test,
+		NoAssetID:         noAssetID_test,
+		Amount:            amountToBuy,
+		MaxPrice:          maxPrice,
 	}
 
 	// 3. Execute the Action
@@ -464,7 +500,7 @@ func TestBuyNo_Execute_Error_NoBalanceRecord_InsufficientFunds(t *testing.T) {
 	}
 
 	// Check user's NO share balance (should be 0)
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userNoShares)
@@ -473,7 +509,7 @@ func TestBuyNo_Execute_Error_NoBalanceRecord_InsufficientFunds(t *testing.T) {
 	}
 
 	// Check market's total NO shares (should be unchanged)
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }
@@ -492,7 +528,10 @@ func TestBuyNo_Execute_Error_MarketTradingClosed(t *testing.T) {
 
 	// Test Data
 	senderAddr := codec.Address{0x01}
-	marketID := uint64(1)
+	marketID_uint64 := uint64(1)
+	marketID_ids := ids.ID{byte(marketID_uint64)} // Simple conversion for test
+	collateralAssetID_test := ids.ID{0xA1, 0xA2}    // Test collateral asset ID
+	noAssetID_test := ids.ID{0xC1, 0xC2}         // Test NO asset ID
 	initialUserBalance := uint64(1000)
 	amountToBuy := uint64(10)
 	maxPrice := uint64(50)
@@ -503,25 +542,27 @@ func TestBuyNo_Execute_Error_MarketTradingClosed(t *testing.T) {
 
 	// 2. Create and store the market with TradingClosed status
 	market := &storage.Market{
-		ID:                marketID,
+		ID:                marketID_uint64,
 		Question:          "Test Market Trading Closed",
-		CollateralAssetID: ids.Empty,
+		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       200, // Ensure ClosingTime is in the future relative to txTimestamp
 		OracleAddr:        codec.EmptyAddress,
 		Status:            storage.MarketStatus_Locked, // Market is locked
 		Creator:           codec.Address{0x02},
 		ResolutionTime:    300,
-		YesAssetID:        ids.Empty,
-		NoAssetID:         ids.Empty,
+		YesAssetID:        ids.ID{0xB1, 0xB2}, // Example YesAssetID
+		NoAssetID:         noAssetID_test,
 	}
 	err = storage.SetMarket(ctx, mu, market)
 	require.NoError(err)
 
 	// 3. Create BuyNo Action
 	buyNoAction := &BuyNo{
-		MarketID: marketID,
-		Amount:   amountToBuy,
-		MaxPrice: maxPrice,
+		MarketID:          marketID_ids,
+		CollateralAssetID: collateralAssetID_test,
+		NoAssetID:         noAssetID_test,
+		Amount:            amountToBuy,
+		MaxPrice:          maxPrice,
 	}
 
 	// 4. Execute the Action
@@ -532,7 +573,7 @@ func TestBuyNo_Execute_Error_MarketTradingClosed(t *testing.T) {
 	// 5. Assertions
 	require.Error(err, "Expected an error for market trading closed")
 	require.ErrorIs(err, ErrMarketInteraction, "Error should be ErrMarketInteraction")
-	require.Contains(err.Error(), fmt.Sprintf("market %d trading is closed (status: Locked)", marketID), "Error message mismatch")
+	require.Contains(err.Error(), fmt.Sprintf("market %s trading is closed (status: Locked)", marketID_ids.String()), "Error message mismatch")
 	require.Nil(output, "Output should be nil on error")
 
 	// Check user's native token balance (should be unchanged)
@@ -541,7 +582,7 @@ func TestBuyNo_Execute_Error_MarketTradingClosed(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's NO share balance (should be 0)
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userNoShares)
@@ -550,7 +591,7 @@ func TestBuyNo_Execute_Error_MarketTradingClosed(t *testing.T) {
 	}
 
 	// Check market's total NO shares (should be unchanged)
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }
@@ -570,7 +611,10 @@ func TestBuyNo_Execute_Error_MarketEndTimePassed(t *testing.T) {
 
 	// Test Data
 	senderAddr := codec.Address{0x01}
-	marketID := uint64(1)
+	marketID_uint64 := uint64(1)
+	marketID_ids := ids.ID{byte(marketID_uint64)} // Simple conversion for test
+	collateralAssetID_test := ids.ID{0xA1, 0xA2}    // Test collateral asset ID
+	noAssetID_test := ids.ID{0xC1, 0xC2}         // Test NO asset ID
 	initialUserBalance := uint64(1000)
 	amountToBuy := uint64(10)
 	maxPrice := uint64(50)
@@ -581,25 +625,27 @@ func TestBuyNo_Execute_Error_MarketEndTimePassed(t *testing.T) {
 
 	// 2. Create and store the market with EndTime in the past
 	market := &storage.Market{
-		ID:                marketID,
+		ID:                marketID_uint64,
 		Question:          "Test Market EndTime Passed",
-		CollateralAssetID: ids.Empty,
+		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       50,  // txTimestamp (100) > ClosingTime (50)
 		OracleAddr:        codec.EmptyAddress,
 		Status:            storage.MarketStatus_Open, // Market is open but past its ClosingTime
 		Creator:           codec.Address{0x02},
 		ResolutionTime:    300,
-		YesAssetID:        ids.Empty,
-		NoAssetID:         ids.Empty,
+		YesAssetID:        ids.ID{0xB1, 0xB2}, // Example YesAssetID
+		NoAssetID:         noAssetID_test,
 	}
 	err = storage.SetMarket(ctx, mu, market)
 	require.NoError(err)
 
 	// 3. Create BuyNo Action
 	buyNoAction := &BuyNo{
-		MarketID: marketID,
-		Amount:   amountToBuy,
-		MaxPrice: maxPrice,
+		MarketID:          marketID_ids,
+		CollateralAssetID: collateralAssetID_test,
+		NoAssetID:         noAssetID_test,
+		Amount:            amountToBuy,
+		MaxPrice:          maxPrice,
 	}
 
 	// 4. Execute the Action
@@ -610,7 +656,7 @@ func TestBuyNo_Execute_Error_MarketEndTimePassed(t *testing.T) {
 	// 5. Assertions
 	require.Error(err, "Expected an error for market EndTime passed")
 	require.ErrorIs(err, ErrMarketInteraction, "Error should be ErrMarketInteraction")
-	require.Contains(err.Error(), fmt.Sprintf("market %d has ended", marketID), "Error message mismatch")
+	require.Contains(err.Error(), fmt.Sprintf("market %s has ended", marketID_ids.String()), "Error message mismatch")
 	require.Nil(output, "Output should be nil on error")
 
 	// Check user's native token balance (should be unchanged)
@@ -619,7 +665,7 @@ func TestBuyNo_Execute_Error_MarketEndTimePassed(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's NO share balance (should be 0)
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userNoShares)
@@ -628,7 +674,7 @@ func TestBuyNo_Execute_Error_MarketEndTimePassed(t *testing.T) {
 	}
 
 	// Check market's total NO shares (should be unchanged)
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }

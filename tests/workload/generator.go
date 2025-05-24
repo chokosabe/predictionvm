@@ -61,7 +61,7 @@ func (g *TxGenerator) GenerateTx(ctx context.Context, uri string) (*chain.Transa
 		unitPrices,
 		time.Now().UnixMilli(),
 		[]chain.Action{&actions.BuyYes{
-			MarketID: 1, // Assuming market with ID 1 exists
+			MarketID: ids.ID{byte(1)}, // Assuming market with ID 1 exists
 			Amount:   1, // Buy 1 share
 		}},
 		g.factory,

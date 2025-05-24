@@ -11,7 +11,9 @@ import (
 	"github.com/ava-labs/hypersdk/codec"
 	"github.com/ava-labs/hypersdk/state" // Added for state.Keys, state.Permissions
 
+	"github.com/chokosabe/predictionvm/asset"
 	userConsts "github.com/chokosabe/predictionvm/consts" // Aliased for clarity
+	"github.com/chokosabe/predictionvm/escrow"
 	"github.com/chokosabe/predictionvm/storage"
 )
 
@@ -19,12 +21,13 @@ var _ chain.Action = (*BuyYes)(nil)
 
 // BuyYes represents an action where a user buys YES shares for a specific market.
 type BuyYes struct {
-	MarketID uint64 `serialize:"true" json:"marketId"`
-	// Amount of shares to buy or amount of collateral to commit, depending on market mechanism.
-	Amount uint64 `serialize:"true" json:"amount"`
-	// MaxPrice the user is willing to pay per share, if applicable to market type.
-	// Or max collateral they are willing to lock.
-	MaxPrice uint64 `serialize:"true" json:"maxPrice"`
+	MarketID          ids.ID `serialize:"true" json:"marketId"`
+	CollateralAssetID ids.ID `serialize:"true" json:"collateralAssetId"` // Added: Client must provide this
+	YesAssetID        ids.ID `serialize:"true" json:"yesAssetId"`        // Added: Client must provide this
+	// Amount of collateral the user commits to buy YES shares.
+	Amount            uint64 `serialize:"true" json:"amount"`
+	// MaxPrice is currently unused, placeholder for future AMM logic (e.g., slippage limit).
+	MaxPrice          uint64 `serialize:"true" json:"maxPrice"`
 }
 
 var (
@@ -33,6 +36,7 @@ var (
 	ErrMarketNotFound       = errors.New("market not found")
 	ErrMarketInteraction    = errors.New("market interaction error") // Generic for resolved, cancelled, ended
 	ErrInsufficientFunds    = errors.New("insufficient funds")
+	ErrMarketEndTimePassed  = errors.New("market end time passed")
 )
 
 // GetTypeID implements chain.Action
@@ -45,11 +49,22 @@ func (b *BuyYes) StateKeys(actor codec.Address, _ ids.ID) state.Keys {
 	// TODO: storage.BalanceKey, storage.MarketKey, storage.ShareBalanceKey are currently undefined.
 	// These will need to be correctly defined and imported.
 	// For now, using placeholders that will cause compile errors for these specific lines,
-	// but the method signature and return type are correct for chain.Action.
+	marketKey := GetMarketKey(b.MarketID) // GetMarketKey is from create_market_action.go (same package)
+
+	// Key for the actor's balance of the collateral asset
+	actorCollateralBalanceKey := asset.GetBalanceKey(actor, b.CollateralAssetID)
+
+	// Key for the market's escrow account for the collateral asset
+	marketEscrowKey := escrow.GetEscrowKey(b.MarketID, b.CollateralAssetID)
+
+	// Key for the actor's balance of YES shares (which is an asset)
+	actorYesShareBalanceKey := asset.GetBalanceKey(actor, b.YesAssetID)
+
 	return state.Keys{
-		string(storage.BalanceKey(actor)):                               state.Read | state.Write, // Placeholder
-		string(storage.MarketKey(b.MarketID)):                           state.Read | state.Write, // Placeholder
-		string(storage.ShareBalanceKey(b.MarketID, actor, userConsts.YesShareType)): state.Read | state.Write, // Placeholder
+		string(marketKey):                state.Read,  // To read market details and verify asset IDs matches b.CollateralAssetID and b.YesAssetID
+		string(actorCollateralBalanceKey): state.Write, // To check balance and lock collateral (via escrow.LockCollateral which internally debits)
+		string(marketEscrowKey):          state.Write, // To credit the market's escrow account (via escrow.LockCollateral)
+		string(actorYesShareBalanceKey):   state.Write, // To mint YES shares to the actor (via asset.MintShares)
 	}
 }
 
@@ -71,10 +86,10 @@ func (b *BuyYes) Execute(
 	}
 
 	// 1. Check if market exists and is active
-	market, err := storage.GetMarket(ctx, mu, b.MarketID)
+	market, err := storage.GetMarket(ctx, mu, uint64(b.MarketID[0])) // Convert ids.ID to uint64
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) {
-			return nil, fmt.Errorf("%w: market %d not found when fetching", ErrMarketNotFound, b.MarketID)
+			return nil, fmt.Errorf("%w: market %s not found when fetching", ErrMarketNotFound, b.MarketID.String())
 		}
 		return nil, fmt.Errorf("failed to get market %d: %w", b.MarketID, err)
 	}
@@ -82,8 +97,8 @@ func (b *BuyYes) Execute(
 	// if market == nil {
 	// 	return nil, fmt.Errorf("%w: market %d not found", ErrMarketNotFound, b.MarketID)
 	// }
-	if market.Status == storage.MarketStatus_Resolved {
-		return nil, fmt.Errorf("%w: market %d is already resolved (status: %s)", ErrMarketInteraction, b.MarketID, market.Status.String())
+	if market.Status == storage.MarketStatus_Resolved { // Note: storage.MarketStatus_Resolved might need to be actions.MarketStatusResolved if Market struct is from actions pkg
+		return nil, fmt.Errorf("%w: market %s is already resolved (status: %s)", ErrMarketInteraction, b.MarketID.String(), market.Status.String())
 	}
 	// Removed IsCancelled check as MarketStatus does not have a direct 'Cancelled' state.
 	// Cancellation might be handled by a specific resolution outcome (e.g., Invalid) or other logic.
@@ -92,13 +107,13 @@ func (b *BuyYes) Execute(
 		// which might still allow other actions but not new trades like BuyYes.
 		// For BuyYes, if EndTime is passed and it's still 'Open', it's effectively ended for new trades.
 		// If it's TradingClosed, that also means new trades are not allowed.
-		return nil, fmt.Errorf("%w: market %d has ended or trading is closed (current: %d, end: %d, status: %s)", ErrMarketInteraction, b.MarketID, txTimestamp, market.ClosingTime, market.Status.String())
+		return nil, fmt.Errorf("%w: market %s has ended (current: %d, end: %d)", ErrMarketEndTimePassed, b.MarketID.String(), txTimestamp, market.ClosingTime)
 	}
 	if market.Status == storage.MarketStatus_Locked { // Trading is locked
-		return nil, fmt.Errorf("%w: market %d trading is closed (status: %s)", ErrMarketInteraction, b.MarketID, market.Status.String())
+		return nil, fmt.Errorf("%w: market %s trading is closed (status: %s)", ErrMarketInteraction, b.MarketID.String(), market.Status.String())
 	}
 	if txTimestamp > market.ClosingTime {
-		return nil, fmt.Errorf("%w: market %d has ended (current: %d, end: %d)", ErrMarketInteraction, b.MarketID, txTimestamp, market.ClosingTime)
+		return nil, fmt.Errorf("%w: market %s has ended (current: %d, end: %d)", ErrMarketEndTimePassed, b.MarketID.String(), txTimestamp, market.ClosingTime)
 	}
 
 	// 2. Check actor's balance
@@ -132,7 +147,7 @@ func (b *BuyYes) Execute(
 	}
 
 	// 5. Credit YES shares to actor
-	currentYesShares, err := storage.GetShareBalance(ctx, mu, b.MarketID, actor, userConsts.YesShareType)
+	currentYesShares, err := storage.GetShareBalance(ctx, mu, uint64(b.MarketID[0]), actor, userConsts.YesShareType) // Convert ids.ID to uint64
 	// Allow ErrNotFound for initial share balance, in which case currentShareBalance defaults to 0 (uint64)
 	if err != nil && !errors.Is(err, database.ErrNotFound) {
 		// Consider reverting native token balance change here or using a more transactional approach
@@ -140,7 +155,7 @@ func (b *BuyYes) Execute(
 	}
 
 	newShareBalance := currentYesShares + b.Amount
-	if err := storage.SetShareBalance(ctx, mu, b.MarketID, actor, userConsts.YesShareType, newShareBalance); err != nil {
+	if err := storage.SetShareBalance(ctx, mu, uint64(b.MarketID[0]), actor, userConsts.YesShareType, newShareBalance); err != nil { // Convert ids.ID to uint64
 		// Consider reverting native token balance change here
 		return nil, fmt.Errorf("failed to set new share balance %d for actor %s, market %d, type YES: %w", newShareBalance, actor.String(), b.MarketID, err)
 	}
