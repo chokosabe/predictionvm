@@ -2,37 +2,117 @@ package actions
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 
+	"github.com/ava-labs/avalanchego/database" // For database.ErrNotFound
 	"github.com/ava-labs/avalanchego/ids"
-	"github.com/ava-labs/avalanchego/utils/wrappers"
+	// "github.com/ava-labs/avalanchego/x/merkledb" // No longer directly needed
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/codec"
 	"github.com/ava-labs/hypersdk/state"
-	// "github.com/ava-labs/hypersdk/utils" // Removed as RandomID is not in this hypersdk version
-	"crypto/rand"
-	"encoding/binary"
 
-	"github.com/chokosabe/predictionvm/consts"
-	"github.com/chokosabe/predictionvm/storage"
+	pvmconsts "github.com/chokosabe/predictionvm/consts" // Aliased
 )
 
 const (
+	defaultMaxSize                = uint64(1 << 18) // 256 KiB
+	initialMarketBufferSize       = 256             // Estimate
+	initialCreateMarketBufferSize = 512             // Estimate, Question can be long
+
 	// CreateMarketComputeUnits reflects state reads (checking if market ID exists) and writes (new market, creator balance if fees apply)
 	CreateMarketComputeUnits = 2000 // Placeholder
 	MaxCreateMarketSize      = 1024 // Placeholder, depends on description length and oracle parameters
+	MaxQuestionLength        = 256
+	PrefixMarket             = 0x00
 )
 
 var (
 	ErrUnmarshalEmptyCreateMarket      = errors.New("cannot unmarshal empty bytes as CreateMarket action")
-	ErrQuestionTooLong                 = errors.New("market question is too long") // Renamed
-	ErrClosingTimeInPast               = errors.New("market closing time is in the past") // Renamed
-	ErrResolutionTimeBeforeClosingTime = errors.New("market resolution time is before or at closing time") // Renamed
-	ErrInvalidCollateralAssetID        = errors.New("collateral asset ID is invalid") // Added
-	ErrInvalidOracleAddress            = errors.New("oracle address is invalid")    // Added
-	_                                  chain.Action = (*CreateMarket)(nil)
+	ErrQuestionTooLong                 = errors.New("question too long")
+	ErrClosingTimeInPast               = errors.New("closing time must be in the future")
+	ErrResolutionTimeBeforeClosingTime = errors.New("resolution time must be after closing time")
+	ErrInvalidCollateralAssetID        = errors.New("invalid collateral asset ID")
+	ErrInvalidOracleAddress            = errors.New("invalid oracle address")
+	ErrMarketExists                    = errors.New("market already exists")
 )
+
+// GetMarketKey generates the state key for a given market ID.
+func GetMarketKey(marketID ids.ID) []byte {
+	return append([]byte{PrefixMarket}, marketID[:]...)
+}
+
+// MarketStatus defines the state of a prediction market.
+type MarketStatus byte
+
+const (
+	MarketStatusOpen MarketStatus = iota
+	MarketStatusClosed
+	MarketStatusResolved
+)
+
+// Market represents a prediction market.
+type Market struct {
+	ID                ids.ID        `serialize:"true" json:"id"`                 // Unique identifier for the market (derived from actionID of CreateMarket)
+	Question          string        `serialize:"true" json:"question"`
+	ClosingTime       int64         `serialize:"true" json:"closingTime"`
+	ResolutionTime    int64         `serialize:"true" json:"resolutionTime"`
+	CollateralAssetID ids.ID        `serialize:"true" json:"collateralAssetID"`
+	OracleAddress     codec.Address `serialize:"true" json:"oracleAddress"`
+	YesAssetID        ids.ID        `serialize:"true" json:"yesAssetID"`
+	NoAssetID         ids.ID        `serialize:"true" json:"noAssetID"`
+	Status            MarketStatus  `serialize:"true" json:"status"`
+}
+
+// MarshalCodec serializes the Market into a Packer.
+func (m *Market) MarshalCodec(p *codec.Packer) error {
+	p.PackID(m.ID)
+	p.PackString(m.Question)
+	p.PackInt64(m.ClosingTime)
+	p.PackInt64(m.ResolutionTime)
+	p.PackID(m.CollateralAssetID)
+	p.PackAddress(m.OracleAddress)
+	p.PackID(m.YesAssetID)
+	p.PackID(m.NoAssetID)
+	p.PackByte(byte(m.Status))
+	return p.Err()
+}
+
+// UnmarshalCodec deserializes bytes from a Packer into a Market.
+func (m *Market) UnmarshalCodec(p *codec.Packer) error {
+	p.UnpackID(true, &m.ID) // Assuming true for allowNilOrEmpty/checkEOF
+	m.Question = p.UnpackString(true) // Assuming true for checkEOF
+	m.ClosingTime = p.UnpackInt64(true) // Assuming true for checkEOF
+	m.ResolutionTime = p.UnpackInt64(true) // Assuming true for checkEOF
+	p.UnpackID(true, &m.CollateralAssetID)
+	p.UnpackAddress(&m.OracleAddress)
+	p.UnpackID(true, &m.YesAssetID)
+	p.UnpackID(true, &m.NoAssetID)
+	statusByte := p.UnpackByte() // Corrected: UnpackByte takes no arguments
+	m.Status = MarketStatus(statusByte)
+	return p.Err()
+}
+
+// Bytes serializes the Market.
+func (m *Market) Bytes() []byte {
+	packer := codec.NewWriter(initialMarketBufferSize, int(defaultMaxSize))
+	if err := m.MarshalCodec(packer); err != nil {
+		panic(fmt.Errorf("failed to marshal Market: %w", err))
+	}
+	return packer.Bytes()
+}
+
+// UnmarshalMarket deserializes bytes into a Market.
+func UnmarshalMarket(b []byte, m *Market) error {
+	unpacker := codec.NewReader(b, int(defaultMaxSize))
+	if err := m.UnmarshalCodec(unpacker); err != nil {
+		return fmt.Errorf("failed to unmarshal Market: %w", err)
+	}
+	return nil
+}
+
+var _ chain.Action = (*CreateMarket)(nil)
 
 // CreateMarket represents an action to create a new prediction market.
 // Aligned with Spec 3.1 for Market definition inputs
@@ -44,73 +124,102 @@ type CreateMarket struct {
 	OracleAddr        codec.Address `serialize:"true" json:"oracleAddr"`         // Added, replaces OracleType/Source/Parameters
 }
 
+// MarshalCodec serializes the CreateMarket into a Packer.
+func (cm *CreateMarket) MarshalCodec(p *codec.Packer) error {
+	p.PackString(cm.Question)
+	p.PackID(cm.CollateralAssetID)
+	p.PackInt64(cm.ClosingTime)
+	p.PackInt64(cm.ResolutionTime)
+	p.PackAddress(cm.OracleAddr)
+	return p.Err()
+}
+
+// UnmarshalCodec deserializes bytes from a Packer into a CreateMarket.
+func (cm *CreateMarket) UnmarshalCodec(p *codec.Packer) error {
+	cm.Question = p.UnpackString(true) // Assuming true for checkEOF
+	p.UnpackID(true, &cm.CollateralAssetID) // Assuming true for allowNilOrEmpty/checkEOF
+	cm.ClosingTime = p.UnpackInt64(true) // Assuming true for checkEOF
+	cm.ResolutionTime = p.UnpackInt64(true) // Assuming true for checkEOF
+	p.UnpackAddress(&cm.OracleAddr)
+	return p.Err()
+}
+
 func (*CreateMarket) GetTypeID() uint8 {
-	return consts.CreateMarketID // Assuming CreateMarketID is defined in consts package
+	return pvmconsts.CreateMarketID // Assuming CreateMarketID is defined in consts package
 }
 
 // Bytes serializes the CreateMarket action.
 func (cm *CreateMarket) Bytes() []byte {
-	p := &wrappers.Packer{
-		Bytes:   make([]byte, 0, MaxCreateMarketSize),
-		MaxSize: MaxCreateMarketSize,
-	}
-	p.PackByte(consts.CreateMarketID)
-	if err := codec.LinearCodec.MarshalInto(cm, p); err != nil {
+	packer := codec.NewWriter(initialCreateMarketBufferSize, int(defaultMaxSize))
+	packer.PackByte(pvmconsts.CreateMarketID) // Prefix with TypeID
+	if err := cm.MarshalCodec(packer); err != nil {
 		panic(fmt.Errorf("failed to marshal CreateMarket action: %w", err))
 	}
-	return p.Bytes
+	return packer.Bytes()
 }
 
 // UnmarshalCreateMarket deserializes bytes into a CreateMarket action.
-func UnmarshalCreateMarket(bytes []byte) (chain.Action, error) {
-	if len(bytes) == 0 {
+func UnmarshalCreateMarket(data []byte) (chain.Action, error) {
+	if len(data) == 0 {
 		return nil, ErrUnmarshalEmptyCreateMarket
 	}
-	if bytes[0] != consts.CreateMarketID {
-		return nil, fmt.Errorf("unexpected CreateMarket typeID: %d != %d", bytes[0], consts.CreateMarketID)
+	unpacker := codec.NewReader(data, int(defaultMaxSize))
+	actionType := unpacker.UnpackByte()
+
+	if unpacker.Err() != nil { // Check for errors after UnpackByte, like EOF. Call Err() as a method.
+		return nil, fmt.Errorf("failed to unpack CreateMarket typeID: %w", unpacker.Err())
 	}
+	if actionType != pvmconsts.CreateMarketID {
+		return nil, fmt.Errorf("unexpected CreateMarket typeID: %d != %d", actionType, pvmconsts.CreateMarketID)
+	}
+
 	t := &CreateMarket{}
-	if err := codec.LinearCodec.UnmarshalFrom(
-		&wrappers.Packer{Bytes: bytes[1:]},
-		t,
-	); err != nil {
+	if err := t.UnmarshalCodec(unpacker); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal CreateMarket action: %w", err)
 	}
 	return t, nil
 }
 
+// ComputeUnits returns the compute units this action consumes.
+func (cm *CreateMarket) ComputeUnits(rules chain.Rules) uint64 {
+	return CreateMarketComputeUnits
+}
+
 // StateKeys defines which state keys are read/written by this action.
 func (cm *CreateMarket) StateKeys(actor codec.Address, actionID ids.ID) state.Keys {
-	// We will write to a new market key (ID generated in Execute) and potentially actor's balance for fees.
+	marketKeyBytes := GetMarketKey(actionID)
+	marketKeyString := string(marketKeyBytes) // state.Keys is map[string]Permissions
 	return state.Keys{
-		string(storage.StateKeysBalance(actor)): state.Write, // Assuming a potential fee
-		// A generic prefix indicating a write to the market space.
-		// The exact key isn't known until Execute.
-		string([]byte{storage.MarketPrefix}): state.Write,
+		marketKeyString: state.Write, // Market key is read (to check existence) and then written
 	}
 }
 
 // Execute performs the logic for the CreateMarket action.
 func (cm *CreateMarket) Execute(
-	ctx context.Context,
-	rules chain.Rules,
-	mu state.Mutable,
+	ctx context.Context, // Standard Go context
+	rules chain.Rules, // Chain rules, might be unused here
+	mu state.Mutable, // Mutable state access
 	timestamp int64, // Current block timestamp
-	actor codec.Address,
-	actionID ids.ID,
+	actor codec.Address, // Address of the actor performing the action, might be unused here
+	actionID ids.ID, // This actionID becomes the Market.ID
 ) ([]byte, error) {
-	// Validate input
-	if len(cm.Question) == 0 {
-		return nil, errors.New("market question cannot be empty")
+	_ = rules // Explicitly ignore if not used
+	_ = actor // Explicitly ignore if not used
+
+	marketKey := GetMarketKey(actionID)
+	_, err := mu.GetValue(ctx, marketKey) // Check for existence using GetValue
+	if err == nil {
+		// Value exists, so market already exists
+		return nil, ErrMarketExists
+	} else if !errors.Is(err, database.ErrNotFound) { // Check for database.ErrNotFound
+		// Another error occurred during GetValue
+		return nil, fmt.Errorf("failed to check if market exists: %w", err)
 	}
-	if len(cm.Question) > 256 { // Example max length for Question
+	// If err is merkledb.ErrNotFound, market does not exist, proceed.
+
+	// Validations
+	if len(cm.Question) == 0 || len(cm.Question) > MaxQuestionLength {
 		return nil, ErrQuestionTooLong
-	}
-	if cm.CollateralAssetID == ids.Empty {
-		return nil, ErrInvalidCollateralAssetID
-	}
-	if len(cm.OracleAddr) == 0 { // Basic check for empty OracleAddr
-		return nil, ErrInvalidOracleAddress
 	}
 	if cm.ClosingTime <= timestamp {
 		return nil, ErrClosingTimeInPast
@@ -118,77 +227,48 @@ func (cm *CreateMarket) Execute(
 	if cm.ResolutionTime <= cm.ClosingTime {
 		return nil, ErrResolutionTimeBeforeClosingTime
 	}
-
-	// TODO: Deduct market creation fee from actor if applicable
-	// fee := rules.GetCreateMarketFee() // Assuming such a method exists on rules
-	// if err := storage.DeductBalance(ctx, mu, actor, fee); err != nil {
-	// 	return nil, fmt.Errorf("failed to deduct creation fee: %w", err)
-	// }
-
-	// Generate a unique ID for the market itself (pvm stands for predictionvm market)
-	randomBytesPvmID := make([]byte, ids.IDLen)
-	_, err := rand.Read(randomBytesPvmID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate random bytes for market PVM ID: %w", err)
+	if cm.CollateralAssetID == ids.Empty {
+		return nil, ErrInvalidCollateralAssetID
 	}
-	marketPvmID, err := ids.ToID(randomBytesPvmID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert random bytes to market PVM ID: %w", err)
-	}
-	marketIDUint64 := binary.BigEndian.Uint64(marketPvmID[:8]) // Used for storage.Market.ID (uint64)
-
-	// Generate Yes and No Asset IDs for the market's shares
-	yesAssetRandomBytes := make([]byte, ids.IDLen)
-	if _, err := rand.Read(yesAssetRandomBytes); err != nil {
-		return nil, fmt.Errorf("failed to generate random bytes for yes asset ID: %w", err)
-	}
-	yesAssetID, err := ids.ToID(yesAssetRandomBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert random bytes to yes asset ID: %w", err)
+	if cm.OracleAddr == codec.EmptyAddress {
+		return nil, ErrInvalidOracleAddress
 	}
 
-	noAssetRandomBytes := make([]byte, ids.IDLen)
-	if _, err := rand.Read(noAssetRandomBytes); err != nil {
-		return nil, fmt.Errorf("failed to generate random bytes for no asset ID: %w", err)
-	}
-	noAssetID, err := ids.ToID(noAssetRandomBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert random bytes to no asset ID: %w", err)
-	}
+	// Generate YesAssetID
+	yesSeed := make([]byte, 0, ids.IDLen+len("YES"))
+	yesSeed = append(yesSeed, actionID[:]...)
+	yesSeed = append(yesSeed, []byte("YES")...)
+	yesAssetID := ids.ID(sha256.Sum256(yesSeed))
 
-	market := &storage.Market{
-		ID:                marketIDUint64,
+	// Generate NoAssetID
+	noSeed := make([]byte, 0, ids.IDLen+len("NO"))
+	noSeed = append(noSeed, actionID[:]...)
+	noSeed = append(noSeed, []byte("NO")...)
+	noAssetID := ids.ID(sha256.Sum256(noSeed))
+
+	market := &Market{ // Using the Market struct defined in this file
+		ID:                actionID,
 		Question:          cm.Question,
-		CollateralAssetID: cm.CollateralAssetID,
 		ClosingTime:       cm.ClosingTime,
-		OracleAddr:        cm.OracleAddr,
-		Status:            storage.MarketStatus_Open,
-		ResolvedOutcome:   storage.Outcome_Pending,
-		YesAssetID:        yesAssetID, // Generated
-		NoAssetID:         noAssetID,  // Generated
-		Creator:           actor,
 		ResolutionTime:    cm.ResolutionTime,
+		CollateralAssetID: cm.CollateralAssetID,
+		OracleAddress:     cm.OracleAddr,
+		YesAssetID:        yesAssetID,
+		NoAssetID:         noAssetID,
+		Status:            MarketStatusOpen,
 	}
 
-	if err := storage.SetMarket(ctx, mu, market); err != nil {
-		return nil, fmt.Errorf("failed to set new market %d: %w", market.ID, err)
+	marketBytes := market.Bytes()
+	if err := mu.Insert(ctx, marketKey, marketBytes); err != nil { // Use Insert as per hypersdk v0.0.18
+		return nil, fmt.Errorf("failed to save market: %w", err)
 	}
 
-	resultMsg := fmt.Sprintf("Market %d created successfully by %s", market.ID, actor.String())
-	return []byte(resultMsg), nil
-}
-
-// ComputeUnits estimates the computational cost of the CreateMarket action.
-func (cm *CreateMarket) ComputeUnits(rules chain.Rules) uint64 {
-	// Example: baseUnits + cost per byte of description and oracle params
-	// baseUnits := rules.GetBaseUnits(consts.CreateMarketID)
-	// units += rules.GetCostPerByte(uint64(len(cm.Description)))
-	// units += rules.GetCostPerByte(uint64(len(cm.OracleSource)))
-	// units += rules.GetCostPerByte(uint64(len(cm.OracleParameters)))
-	return CreateMarketComputeUnits // Placeholder
+	return actionID[:], nil // Return the market ID (actionID) as a byte slice
 }
 
 // ValidRange defines the time range during which the action is valid.
+// It returns (0,0) to indicate that the action is generally valid at any time.
+// Specific timing validations (e.g., market closing time in future) are handled in Execute.
 func (*CreateMarket) ValidRange(rules chain.Rules) (start int64, end int64) {
-	return -1, -1 // Always valid unless specific rules apply
+	return 0, 0
 }
