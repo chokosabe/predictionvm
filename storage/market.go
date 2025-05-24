@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/ava-labs/avalanchego/database"
+	"github.com/ava-labs/avalanchego/ids" // Added this import
 	"github.com/ava-labs/hypersdk/codec"
 	"github.com/ava-labs/hypersdk/state"
 
@@ -64,19 +65,35 @@ func (ot OutcomeType) String() string {
 }
 
 // Market defines the structure for a prediction market.
+// Aligned with Spec 3.1
+// Key: market/{id} -> Market
+/*
+  id            uint64
+  question      string
+  collateral    assetID   // USDC or native token (represented by ids.ID)
+  closingTime   uint64    // unix (represented by int64)
+  oracleAddr    address   // BLS pubkey (represented by codec.Address)
+  status        enum{OPEN, LOCKED, RESOLVED} (represented by MarketStatus)
+  outcome       bool?     // nil until RESOLVED (represented by ResolvedOutcome OutcomeType)
+  yesAssetID    assetID   // ERC404 YES token (represented by ids.ID)
+  noAssetID     assetID   // ERC404 NO token (represented by ids.ID)
+*/
 type Market struct {
-	ID               uint64        `serialize:"true" json:"id"`
-	Description      string        `serialize:"true" json:"description"`
-	Status           MarketStatus  `serialize:"true" json:"status"`
-	Creator          codec.Address `serialize:"true" json:"creator"`
-	EndTime          int64         `serialize:"true" json:"endTime"`
-	ResolutionTime   int64         `serialize:"true" json:"resolutionTime"`
-	TotalYesShares   uint64        `serialize:"true" json:"totalYesShares"`
-	TotalNoShares    uint64        `serialize:"true" json:"totalNoShares"`
-	OracleType       uint8         `serialize:"true" json:"oracleType"`        // Type of oracle (e.g., 0 for Manual, 1 for Chainlink)
-	OracleSource     string        `serialize:"true" json:"oracleSource"`      // Oracle identifier (URL, address, etc.)
-	OracleParameters []byte        `serialize:"true" json:"oracleParameters"`  // Specific parameters for the oracle job
-	ResolvedOutcome  OutcomeType   `serialize:"true" json:"resolvedOutcome"` // The final outcome of the market
+	ID                uint64        `serialize:"true" json:"id"`
+	Question          string        `serialize:"true" json:"question"`                 // Renamed from Description
+	CollateralAssetID ids.ID        `serialize:"true" json:"collateralAssetID"`      // Added
+	ClosingTime       int64         `serialize:"true" json:"closingTime"`              // Spec says uint64, using int64 for consistency with other time fields
+	OracleAddr        codec.Address `serialize:"true" json:"oracleAddr"`               // Added, replaces OracleType/Source/Parameters
+	Status            MarketStatus  `serialize:"true" json:"status"`
+	ResolvedOutcome   OutcomeType   `serialize:"true" json:"resolvedOutcome"`
+	YesAssetID        ids.ID        `serialize:"true" json:"yesAssetID"`               // Added
+	NoAssetID         ids.ID        `serialize:"true" json:"noAssetID"`                // Added
+
+	// Fields from previous version, kept for now or to be reviewed against full spec integration
+	Creator         codec.Address `serialize:"true" json:"creator"`
+	ResolutionTime  int64         `serialize:"true" json:"resolutionTime"` // Spec doesn't explicitly list this, but useful
+	TotalYesShares  uint64        `serialize:"true" json:"totalYesShares"`   // Will be derived from HybridAsset module later
+	TotalNoShares   uint64        `serialize:"true" json:"totalNoShares"`    // Will be derived from HybridAsset module later
 }
 
 // MarketKey generates the state key for a given market ID.

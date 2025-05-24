@@ -87,18 +87,18 @@ func (b *BuyYes) Execute(
 	}
 	// Removed IsCancelled check as MarketStatus does not have a direct 'Cancelled' state.
 	// Cancellation might be handled by a specific resolution outcome (e.g., Invalid) or other logic.
-	if txTimestamp > market.EndTime && market.Status == storage.MarketStatus_Open { // Can only trade if market is open and within time
+	if txTimestamp > market.ClosingTime && market.Status == storage.MarketStatus_Open { // Can only trade if market is open and within time
 		// If trading is closed but not yet resolved, that's a different state (MarketStatus_TradingClosed)
 		// which might still allow other actions but not new trades like BuyYes.
 		// For BuyYes, if EndTime is passed and it's still 'Open', it's effectively ended for new trades.
 		// If it's TradingClosed, that also means new trades are not allowed.
-		return nil, fmt.Errorf("%w: market %d has ended or trading is closed (current: %d, end: %d, status: %s)", ErrMarketInteraction, b.MarketID, txTimestamp, market.EndTime, market.Status.String())
+		return nil, fmt.Errorf("%w: market %d has ended or trading is closed (current: %d, end: %d, status: %s)", ErrMarketInteraction, b.MarketID, txTimestamp, market.ClosingTime, market.Status.String())
 	}
 	if market.Status == storage.MarketStatus_TradingClosed {
 		return nil, fmt.Errorf("%w: market %d trading is closed (status: %s)", ErrMarketInteraction, b.MarketID, market.Status.String())
 	}
-	if txTimestamp > market.EndTime {
-		return nil, fmt.Errorf("%w: market %d has ended (current: %d, end: %d)", ErrMarketInteraction, b.MarketID, txTimestamp, market.EndTime)
+	if txTimestamp > market.ClosingTime {
+		return nil, fmt.Errorf("%w: market %d has ended (current: %d, end: %d)", ErrMarketInteraction, b.MarketID, txTimestamp, market.ClosingTime)
 	}
 
 	// 2. Check actor's balance

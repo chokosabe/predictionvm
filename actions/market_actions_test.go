@@ -49,14 +49,16 @@ func TestBuyYes_Execute_Success(t *testing.T) {
 
 	// 2. Create and store a market
 	market := &storage.Market{
-		ID:             marketID,
-		Description:    "Test Market for BuyYes",
-		Status:         storage.MarketStatus_Open,
-		Creator:        codec.Address{0x02}, // Different from sender
-		EndTime:        200,              // Market closes at time 200
-		ResolutionTime: 300,
-		TotalYesShares: 0,
-		TotalNoShares:  0,
+		ID:                marketID,
+		Question:          "Test Market for BuyYes",
+		CollateralAssetID: ids.Empty,
+		ClosingTime:       200, // Market closes at time 200
+		OracleAddr:        codec.EmptyAddress,
+		Status:            storage.MarketStatus_Open,
+		Creator:           codec.Address{0x02}, // Different from sender
+		ResolutionTime:    300,
+		YesAssetID:        ids.Empty,
+		NoAssetID:         ids.Empty,
 	}
 	err = storage.SetMarket(ctx, mu, market)
 	require.NoError(err)
@@ -98,8 +100,6 @@ func TestBuyYes_Execute_Success(t *testing.T) {
 	updatedMarket, err := storage.GetMarket(ctx, mu, marketID)
 	require.NoError(err)
 	require.NotNil(updatedMarket)
-	require.Equal(amountToBuy, updatedMarket.TotalYesShares) // Check if market's total YES shares are updated
-	require.Equal(uint64(0), updatedMarket.TotalNoShares) // No change to NO shares
 
 	// Check that no NO shares were minted for the user
 	userNoShares, err := storage.GetShareBalance(ctx, mu, marketID, senderAddr, userConsts.NoShareType) // Changed pvmConsts to userConsts

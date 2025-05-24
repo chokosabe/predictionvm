@@ -25,23 +25,23 @@ const (
 )
 
 var (
-	ErrUnmarshalEmptyCreateMarket  = errors.New("cannot unmarshal empty bytes as CreateMarket action")
-	ErrDescriptionTooLong          = errors.New("market description is too long")
-	ErrOracleSourceTooLong         = errors.New("oracle source is too long")
-	ErrOracleParametersTooLong     = errors.New("oracle parameters are too long")
-	ErrEndTimeInPast               = errors.New("market end time is in the past")
-	ErrResolutionTimeBeforeEndTime = errors.New("market resolution time is before or at end time")
-	_                              chain.Action = (*CreateMarket)(nil)
+	ErrUnmarshalEmptyCreateMarket      = errors.New("cannot unmarshal empty bytes as CreateMarket action")
+	ErrQuestionTooLong                 = errors.New("market question is too long") // Renamed
+	ErrClosingTimeInPast               = errors.New("market closing time is in the past") // Renamed
+	ErrResolutionTimeBeforeClosingTime = errors.New("market resolution time is before or at closing time") // Renamed
+	ErrInvalidCollateralAssetID        = errors.New("collateral asset ID is invalid") // Added
+	ErrInvalidOracleAddress            = errors.New("oracle address is invalid")    // Added
+	_                                  chain.Action = (*CreateMarket)(nil)
 )
 
 // CreateMarket represents an action to create a new prediction market.
+// Aligned with Spec 3.1 for Market definition inputs
 type CreateMarket struct {
-	Description      string `serialize:"true" json:"description"`
-	EndTime          int64  `serialize:"true" json:"endTime"`
-	ResolutionTime   int64  `serialize:"true" json:"resolutionTime"`
-	OracleType       uint8  `serialize:"true" json:"oracleType"`
-	OracleSource     string `serialize:"true" json:"oracleSource"`
-	OracleParameters []byte `serialize:"true" json:"oracleParameters"`
+	Question          string        `serialize:"true" json:"question"`           // Renamed from Description
+	CollateralAssetID ids.ID        `serialize:"true" json:"collateralAssetID"`  // Added
+	ClosingTime       int64         `serialize:"true" json:"closingTime"`        // Renamed from EndTime
+	ResolutionTime    int64         `serialize:"true" json:"resolutionTime"`
+	OracleAddr        codec.Address `serialize:"true" json:"oracleAddr"`         // Added, replaces OracleType/Source/Parameters
 }
 
 func (*CreateMarket) GetTypeID() uint8 {
@@ -100,23 +100,23 @@ func (cm *CreateMarket) Execute(
 	actionID ids.ID,
 ) ([]byte, error) {
 	// Validate input
-	if len(cm.Description) == 0 {
-		return nil, errors.New("market description cannot be empty")
+	if len(cm.Question) == 0 {
+		return nil, errors.New("market question cannot be empty")
 	}
-	if len(cm.Description) > 256 { // Example max length
-		return nil, ErrDescriptionTooLong
+	if len(cm.Question) > 256 { // Example max length for Question
+		return nil, ErrQuestionTooLong
 	}
-	if len(cm.OracleSource) > 256 { // Example max length
-		return nil, ErrOracleSourceTooLong
+	if cm.CollateralAssetID == ids.Empty {
+		return nil, ErrInvalidCollateralAssetID
 	}
-	if len(cm.OracleParameters) > 512 { // Example max length
-		return nil, ErrOracleParametersTooLong
+	if len(cm.OracleAddr) == 0 { // Basic check for empty OracleAddr
+		return nil, ErrInvalidOracleAddress
 	}
-	if cm.EndTime <= timestamp {
-		return nil, ErrEndTimeInPast
+	if cm.ClosingTime <= timestamp {
+		return nil, ErrClosingTimeInPast
 	}
-	if cm.ResolutionTime <= cm.EndTime {
-		return nil, ErrResolutionTimeBeforeEndTime
+	if cm.ResolutionTime <= cm.ClosingTime {
+		return nil, ErrResolutionTimeBeforeClosingTime
 	}
 
 	// TODO: Deduct market creation fee from actor if applicable
@@ -125,39 +125,51 @@ func (cm *CreateMarket) Execute(
 	// 	return nil, fmt.Errorf("failed to deduct creation fee: %w", err)
 	// }
 
-	randomBytes := make([]byte, ids.IDLen)
-	_, err := rand.Read(randomBytes)
+	// Generate a unique ID for the market itself (pvm stands for predictionvm market)
+	randomBytesPvmID := make([]byte, ids.IDLen)
+	_, err := rand.Read(randomBytesPvmID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate random bytes for market ID: %w", err)
+		return nil, fmt.Errorf("failed to generate random bytes for market PVM ID: %w", err)
 	}
-	marketID, err := ids.ToID(randomBytes)
+	marketPvmID, err := ids.ToID(randomBytesPvmID)
 	if err != nil {
-		// This should ideally not happen if randomBytes is correct length and not all zeros
-		return nil, fmt.Errorf("failed to convert random bytes to market ID: %w", err)
+		return nil, fmt.Errorf("failed to convert random bytes to market PVM ID: %w", err)
 	}
-	
-	// Convert ids.ID to uint64 for storage.Market.ID
-	// Ensure this conversion is appropriate for your ID scheme.
-	// If storage.Market.ID should be ids.ID, then this conversion is not needed
-	// and storage.MarketKey, etc., would need to handle ids.ID.
-	// For now, assuming storage.Market.ID is uint64.
-	// We'll use the first 8 bytes of the ids.ID for the uint64 market ID.
-	marketIDUint64 := binary.BigEndian.Uint64(marketID[:8])
+	marketIDUint64 := binary.BigEndian.Uint64(marketPvmID[:8]) // Used for storage.Market.ID (uint64)
 
+	// Generate Yes and No Asset IDs for the market's shares
+	yesAssetRandomBytes := make([]byte, ids.IDLen)
+	if _, err := rand.Read(yesAssetRandomBytes); err != nil {
+		return nil, fmt.Errorf("failed to generate random bytes for yes asset ID: %w", err)
+	}
+	yesAssetID, err := ids.ToID(yesAssetRandomBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert random bytes to yes asset ID: %w", err)
+	}
+
+	noAssetRandomBytes := make([]byte, ids.IDLen)
+	if _, err := rand.Read(noAssetRandomBytes); err != nil {
+		return nil, fmt.Errorf("failed to generate random bytes for no asset ID: %w", err)
+	}
+	noAssetID, err := ids.ToID(noAssetRandomBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert random bytes to no asset ID: %w", err)
+	}
 
 	market := &storage.Market{
-		ID:               marketIDUint64,
-		Description:      cm.Description,
-		Creator:          actor,
-		EndTime:          cm.EndTime,
-		ResolutionTime:   cm.ResolutionTime,
-		Status:           storage.MarketStatus_Open,
-		TotalYesShares:   0,
-		TotalNoShares:    0,
-		OracleType:       cm.OracleType,
-		OracleSource:     cm.OracleSource,
-		OracleParameters: cm.OracleParameters,
-		ResolvedOutcome:  storage.Outcome_Pending,
+		ID:                marketIDUint64,
+		Question:          cm.Question,
+		CollateralAssetID: cm.CollateralAssetID,
+		ClosingTime:       cm.ClosingTime,
+		OracleAddr:        cm.OracleAddr,
+		Status:            storage.MarketStatus_Open,
+		ResolvedOutcome:   storage.Outcome_Pending,
+		YesAssetID:        yesAssetID, // Generated
+		NoAssetID:         noAssetID,  // Generated
+		Creator:           actor,
+		ResolutionTime:    cm.ResolutionTime,
+		TotalYesShares:    0, // Will be managed by HybridAsset module
+		TotalNoShares:     0, // Will be managed by HybridAsset module
 	}
 
 	if err := storage.SetMarket(ctx, mu, market); err != nil {

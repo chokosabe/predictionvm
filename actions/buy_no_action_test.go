@@ -43,14 +43,16 @@ func TestBuyNo_Execute_Success(t *testing.T) {
 
 	// 2. Create and store a market
 	market := &storage.Market{
-		ID:             marketID,
-		Description:    "Test Market for BuyNo",
-		Status:         storage.MarketStatus_Open,
-		Creator:        codec.Address{0x02}, // Different from sender
-		EndTime:        200,              // Market closes at time 200
-		ResolutionTime: 300,
-		TotalYesShares: 0,
-		TotalNoShares:  0,
+		ID:                marketID,
+		Question:          "Test Market for BuyNo",
+		CollateralAssetID: ids.Empty,
+		ClosingTime:       200, // Market closes at time 200
+		OracleAddr:        codec.EmptyAddress,
+		Status:            storage.MarketStatus_Open,
+		Creator:           codec.Address{0x02}, // Different from sender
+		ResolutionTime:    300,
+		YesAssetID:        ids.Empty,
+		NoAssetID:         ids.Empty,
 	}
 	err = storage.SetMarket(ctx, mu, market)
 	require.NoError(err)
@@ -90,9 +92,7 @@ func TestBuyNo_Execute_Success(t *testing.T) {
 	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
-	require.Equal(amountToBuy, updatedMarket.TotalNoShares, "Market total NO shares should be updated")
 	// Ensure TotalYesShares remains unchanged
-	require.Equal(uint64(0), updatedMarket.TotalYesShares, "Market total YES shares should remain unchanged")
 }
 
 func TestBuyNo_Execute_Error_MarketNotFound(t *testing.T) {
@@ -172,13 +172,15 @@ func TestBuyNo_Execute_Error_MarketResolved(t *testing.T) {
 	maxPrice := uint64(50)
 
 	marketBase := &storage.Market{
-		ID:             marketID,
-		Description:    "Test Market Resolved",
-		Creator:        codec.Address{0x02},
-		EndTime:        200,
-		ResolutionTime: 300,
-		TotalYesShares: 0,
-		TotalNoShares:  0,
+		ID:                marketID,
+		Question:          "Test Market Resolved",
+		CollateralAssetID: ids.Empty,
+		ClosingTime:       200,
+		OracleAddr:        codec.EmptyAddress,
+		Creator:           codec.Address{0x02},
+		ResolutionTime:    300,
+		YesAssetID:        ids.Empty,
+		NoAssetID:         ids.Empty,
 	}
 
 	buyNoAction := &BuyNo{
@@ -238,8 +240,7 @@ func TestBuyNo_Execute_Error_MarketResolved(t *testing.T) {
 			updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
 			require.NoError(getMarketErr)
 			require.NotNil(updatedMarket)
-			require.Equal(marketBase.TotalNoShares, updatedMarket.TotalNoShares, "Market total NO shares should remain unchanged")
-		})
+				})
 	}
 }
 
@@ -268,14 +269,16 @@ func TestBuyNo_Execute_Error_InsufficientFunds(t *testing.T) {
 
 	// 2. Create and store an open market
 	market := &storage.Market{
-		ID:             marketID,
-		Description:    "Test Market Insufficient Funds",
-		Status:         storage.MarketStatus_Open,
-		Creator:        codec.Address{0x02},
-		EndTime:        200,
-		ResolutionTime: 300,
-		TotalYesShares: 0,
-		TotalNoShares:  0,
+		ID:                marketID,
+		Question:          "Test Market Insufficient Funds",
+		CollateralAssetID: ids.Empty,
+		ClosingTime:       200,
+		OracleAddr:        codec.EmptyAddress,
+		Status:            storage.MarketStatus_Open,
+		Creator:           codec.Address{0x02},
+		ResolutionTime:    300,
+		YesAssetID:        ids.Empty,
+		NoAssetID:         ids.Empty,
 	}
 	err = storage.SetMarket(ctx, mu, market)
 	require.NoError(err)
@@ -317,7 +320,6 @@ func TestBuyNo_Execute_Error_InsufficientFunds(t *testing.T) {
 	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
-	require.Equal(market.TotalNoShares, updatedMarket.TotalNoShares, "Market total NO shares should remain unchanged")
 }
 
 func TestBuyNo_Execute_Error_AmountZero(t *testing.T) {
@@ -413,14 +415,16 @@ func TestBuyNo_Execute_Error_NoBalanceRecord_InsufficientFunds(t *testing.T) {
 
 	// 1. Create and store an open market (needed for the action to proceed past market checks)
 	market := &storage.Market{
-		ID:             marketID,
-		Description:    "Test Market No Balance Record",
-		Status:         storage.MarketStatus_Open,
-		Creator:        codec.Address{0x02},
-		EndTime:        200,
-		ResolutionTime: 300,
-		TotalYesShares: 0,
-		TotalNoShares:  0,
+		ID:                marketID,
+		Question:          "Test Market No Balance Record",
+		CollateralAssetID: ids.Empty,
+		ClosingTime:       200,
+		OracleAddr:        codec.EmptyAddress,
+		Status:            storage.MarketStatus_Open,
+		Creator:           codec.Address{0x02},
+		ResolutionTime:    300,
+		YesAssetID:        ids.Empty,
+		NoAssetID:         ids.Empty,
 	}
 	err := storage.SetMarket(ctx, mu, market)
 	require.NoError(err)
@@ -470,7 +474,6 @@ func TestBuyNo_Execute_Error_NoBalanceRecord_InsufficientFunds(t *testing.T) {
 	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
-	require.Equal(market.TotalNoShares, updatedMarket.TotalNoShares, "Market total NO shares should remain unchanged")
 }
 
 func TestBuyNo_Execute_Error_MarketTradingClosed(t *testing.T) {
@@ -498,14 +501,16 @@ func TestBuyNo_Execute_Error_MarketTradingClosed(t *testing.T) {
 
 	// 2. Create and store the market with TradingClosed status
 	market := &storage.Market{
-		ID:             marketID,
-		Description:    "Test Market Trading Closed",
-		Status:         storage.MarketStatus_TradingClosed,
-		Creator:        codec.Address{0x02},
-		EndTime:        200, // Ensure EndTime is in the future relative to txTimestamp
-		ResolutionTime: 300,
-		TotalYesShares: 0,
-		TotalNoShares:  0,
+		ID:                marketID,
+		Question:          "Test Market Trading Closed",
+		CollateralAssetID: ids.Empty,
+		ClosingTime:       200, // Ensure ClosingTime is in the future relative to txTimestamp
+		OracleAddr:        codec.EmptyAddress,
+		Status:            storage.MarketStatus_TradingClosed,
+		Creator:           codec.Address{0x02},
+		ResolutionTime:    300,
+		YesAssetID:        ids.Empty,
+		NoAssetID:         ids.Empty,
 	}
 	err = storage.SetMarket(ctx, mu, market)
 	require.NoError(err)
@@ -546,7 +551,6 @@ func TestBuyNo_Execute_Error_MarketTradingClosed(t *testing.T) {
 	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
-	require.Equal(market.TotalNoShares, updatedMarket.TotalNoShares, "Market total NO shares should remain unchanged")
 }
 
 func TestBuyNo_Execute_Error_MarketEndTimePassed(t *testing.T) {
@@ -575,14 +579,16 @@ func TestBuyNo_Execute_Error_MarketEndTimePassed(t *testing.T) {
 
 	// 2. Create and store the market with EndTime in the past
 	market := &storage.Market{
-		ID:             marketID,
-		Description:    "Test Market EndTime Passed",
-		Status:         storage.MarketStatus_Open, // Market is open but past its EndTime
-		Creator:        codec.Address{0x02},
-		EndTime:        50,  // txTimestamp (100) > EndTime (50)
-		ResolutionTime: 300,
-		TotalYesShares: 0,
-		TotalNoShares:  0,
+		ID:                marketID,
+		Question:          "Test Market EndTime Passed",
+		CollateralAssetID: ids.Empty,
+		ClosingTime:       50,  // txTimestamp (100) > ClosingTime (50)
+		OracleAddr:        codec.EmptyAddress,
+		Status:            storage.MarketStatus_Open, // Market is open but past its ClosingTime
+		Creator:           codec.Address{0x02},
+		ResolutionTime:    300,
+		YesAssetID:        ids.Empty,
+		NoAssetID:         ids.Empty,
 	}
 	err = storage.SetMarket(ctx, mu, market)
 	require.NoError(err)
@@ -623,5 +629,4 @@ func TestBuyNo_Execute_Error_MarketEndTimePassed(t *testing.T) {
 	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
-	require.Equal(market.TotalNoShares, updatedMarket.TotalNoShares, "Market total NO shares should remain unchanged")
 }

@@ -69,8 +69,8 @@ func (b *BuyNo) Execute(
 	if market.Status == storage.MarketStatus_TradingClosed {
 		return nil, fmt.Errorf("%w: market %d trading is closed (status: %s)", ErrMarketInteraction, b.MarketID, market.Status.String())
 	}
-	if txTimestamp > market.EndTime {
-		return nil, fmt.Errorf("%w: market %d has ended (current: %d, end: %d)", ErrMarketInteraction, b.MarketID, txTimestamp, market.EndTime)
+	if txTimestamp > market.ClosingTime {
+		return nil, fmt.Errorf("%w: market %d has ended (current: %d, end: %d)", ErrMarketInteraction, b.MarketID, txTimestamp, market.ClosingTime)
 	}
 
 	// 2. Check actor's balance
