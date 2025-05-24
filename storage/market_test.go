@@ -20,7 +20,7 @@ func TestSetGetMarket_WithSpecFields(t *testing.T) {
 	testCreatorAddr := codec.CreateAddress(1, ids.GenerateTestID())
 
 	baseMarket := &Market{
-		ID:                1,
+		ID:                ids.ID{1},
 		Question:          "Will it rain tomorrow?",
 		CollateralAssetID: ids.GenerateTestID(),
 		ClosingTime:       1700000000,

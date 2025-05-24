@@ -46,7 +46,7 @@ func TestBuyYes_Execute_Success(t *testing.T) {
 
 	// 2. Create and store a market
 	market := &storage.Market{
-		ID:                marketID_uint64, // storage.Market uses uint64 for ID
+		ID:                marketID_ids, // storage.Market uses uint64 for ID
 		Question:          "Test Market for BuyYes",
 		CollateralAssetID: collateralAssetID_test, // Updated for consistency
 		ClosingTime:       200, // Market closes at time 200
@@ -77,23 +77,37 @@ func TestBuyYes_Execute_Success(t *testing.T) {
 
 	// 5. Assertions for successful execution
 	require.NoError(err)
-	require.Nil(output) // Expect nil output on success
+	require.NotNil(output) // Expect non-nil output
 	require.Equal(uint64(0), units) // ComputeUnits currently returns 0
 
-	// Check user's native token balance
+	// Manually unmarshal the output into BuyYesResult
+	require.NotEmpty(output, "Output should not be empty")
+	// The first byte is the type ID, UnmarshalCodec expects the rest.
+	resultBytes := output[1:] 
+	packer := codec.NewReader(resultBytes, len(resultBytes))
+	
+	buyYesResult := &BuyYesResult{}
+	require.NoError(buyYesResult.UnmarshalCodec(packer), "Failed to unmarshal output into BuyYesResult")
+
+	// Assert the fields of BuyYesResult
 	expectedCost := amountToBuy * maxPriceOrCollateral
+	require.Equal(amountToBuy, buyYesResult.SharesBought, "BuyYesResult.SharesBought should match amountToBuy")
+	require.Equal(expectedCost, buyYesResult.CostPaid, "BuyYesResult.CostPaid should match expectedCost")
+
+	// Check user's native token balance
+	// expectedCost is already defined above
 	expectedFinalUserBalance := initialUserBalance - expectedCost
 	finalUserBalance, getBalErr := storage.GetBalance(ctx, mu, senderAddr)
 	require.NoError(getBalErr)
 	require.Equal(expectedFinalUserBalance, finalUserBalance, "User balance should be correctly deducted")
 
 	// Check user's YES share balance
-	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.YesShareType)
+	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.YesShareType)
 	require.NoError(getShareErr)
 	require.Equal(amountToBuy, userYesShares, "User should have the correct amount of YES shares")
 
 	// Check market's state (TotalYesShares is managed by HybridAsset module, so no direct check here)
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }
@@ -152,7 +166,7 @@ func TestBuyYes_Execute_Error_MarketNotFound(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's YES share balance (should be 0, and fetching might error if key never created)
-	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, nonExistentMarketID_uint64, senderAddr, userConsts.YesShareType)
+	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, nonExistentMarketID_ids, senderAddr, userConsts.YesShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares if key doesn't exist")
 		require.Equal(uint64(0), userYesShares, "User YES shares should be 0 if error is ErrNotFound")
@@ -183,7 +197,7 @@ func TestBuyYes_Execute_Error_MarketResolved(t *testing.T) {
 	maxPrice := uint64(50)
 
 	marketBase := &storage.Market{
-		ID:                marketID_uint64, // storage.Market uses uint64 for ID
+		ID:                marketID_ids, // storage.Market uses uint64 for ID
 		Question:          "Test Market Resolved for BuyYes",
 		CollateralAssetID: collateralAssetID_test, // Updated
 		ClosingTime:       200,
@@ -243,7 +257,7 @@ func TestBuyYes_Execute_Error_MarketResolved(t *testing.T) {
 			require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 			// Check user's YES share balance (should be 0)
-			userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.YesShareType)
+			userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.YesShareType)
 			if getShareErr != nil {
 				require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 				require.Equal(uint64(0), userYesShares)
@@ -252,7 +266,7 @@ func TestBuyYes_Execute_Error_MarketResolved(t *testing.T) {
 			}
 
 			// Check market's state (TotalYesShares is managed by HybridAsset module)
-			updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
+			updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids)
 			require.NoError(getMarketErr)
 			require.NotNil(updatedMarket)
 		})
@@ -287,7 +301,7 @@ func TestBuyYes_Execute_Error_InsufficientFunds(t *testing.T) {
 
 	// 2. Create and store an open market
 	market := &storage.Market{
-		ID:                marketID_uint64, // storage.Market uses uint64 for ID
+		ID:                marketID_ids, // storage.Market uses uint64 for ID
 		Question:          "Test Market Insufficient Funds for BuyYes",
 		CollateralAssetID: collateralAssetID_test, // Updated
 		ClosingTime:       200,
@@ -328,7 +342,7 @@ func TestBuyYes_Execute_Error_InsufficientFunds(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's YES share balance (should be 0)
-	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.YesShareType)
+	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.YesShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userYesShares)
@@ -337,7 +351,7 @@ func TestBuyYes_Execute_Error_InsufficientFunds(t *testing.T) {
 	}
 
 	// Check market's state
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64) // Corrected marketID here
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids) // Corrected marketID here
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 	// Ensure other market properties are as expected if necessary
@@ -444,7 +458,7 @@ func TestBuyYes_Execute_Error_NoBalanceRecord_InsufficientFunds(t *testing.T) {
 
 	// 1. Create and store the market (ensure it exists for other checks, though actor has no balance)
 	market := &storage.Market{
-		ID:                marketID_uint64, // Uses uint64 for storage.Market
+		ID:                marketID_ids, // Uses uint64 for storage.Market
 		Question:          "Test Market for No Balance Record",
 		CollateralAssetID: ids.Empty,       // storage.Market uses ids.Empty here
 		ClosingTime:       200,
@@ -489,7 +503,7 @@ func TestBuyYes_Execute_Error_NoBalanceRecord_InsufficientFunds(t *testing.T) {
 	}
 
 	// Check user's YES share balance (should be 0)
-	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.YesShareType)
+	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.YesShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userYesShares)
@@ -498,7 +512,7 @@ func TestBuyYes_Execute_Error_NoBalanceRecord_InsufficientFunds(t *testing.T) {
 	}
 
 	// Check market's state - this should check the actual market that was set up
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64) // Corrected: Check the market that exists
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids) // Corrected: Check the market that exists
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }
@@ -531,7 +545,7 @@ func TestBuyYes_Execute_Error_MarketTradingClosed(t *testing.T) {
 
 	// 2. Create and store the market with TradingClosed status
 	market := &storage.Market{
-		ID:                marketID_uint64, // Uses uint64 for storage.Market
+		ID:                marketID_ids, // Uses uint64 for storage.Market
 		Question:          "Test Market Trading Closed for BuyYes",
 		CollateralAssetID: ids.Empty,       // storage.Market uses ids.Empty here
 		ClosingTime:       200, // Ensure ClosingTime is in the future relative to txTimestamp
@@ -571,7 +585,7 @@ func TestBuyYes_Execute_Error_MarketTradingClosed(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's YES share balance (should be 0)
-	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.YesShareType)
+	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.YesShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userYesShares)
@@ -580,7 +594,7 @@ func TestBuyYes_Execute_Error_MarketTradingClosed(t *testing.T) {
 	}
 
 	// Check market's state
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }
@@ -614,7 +628,7 @@ func TestBuyYes_Execute_Error_MarketEndTimePassed(t *testing.T) {
 
 	// 2. Create and store the market with EndTime in the past
 	market := &storage.Market{
-		ID:                marketID_uint64,
+		ID:                marketID_ids,
 		Question:          "Test Market EndTime Passed for BuyYes",
 		CollateralAssetID: ids.Empty,
 		ClosingTime:       50, // EndTime is before txTimestamp (100)
@@ -653,7 +667,7 @@ func TestBuyYes_Execute_Error_MarketEndTimePassed(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's YES share balance (should be 0)
-	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.YesShareType)
+	userYesShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.YesShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userYesShares)
@@ -662,7 +676,7 @@ func TestBuyYes_Execute_Error_MarketEndTimePassed(t *testing.T) {
 	}
 
 	// Check market's state
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }

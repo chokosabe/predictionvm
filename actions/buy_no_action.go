@@ -19,6 +19,12 @@ import (
 
 var _ chain.Action = (*BuyNo)(nil)
 
+const (
+	// MaxBuyNoResultSize is a pessimistic estimate of the max size of BuyNoResult.
+	// TypeID (1) + SharesBought (8) + CostPaid (8) = 17 bytes. We use 32 for buffer.
+	MaxBuyNoResultSize = 32
+)
+
 // BuyNo represents an action where a user buys NO shares for a specific market.
 type BuyNo struct {
 	MarketID          ids.ID `serialize:"true" json:"marketId"`
@@ -75,8 +81,7 @@ func (b *BuyNo) Execute(
 	}
 
 	// 1. Check if market exists and is active
-	marketIDUint64 := uint64(b.MarketID[0]) // Convert ids.ID to uint64 for storage funcs
-	market, err := storage.GetMarket(ctx, mu, marketIDUint64)
+	market, err := storage.GetMarket(ctx, mu, b.MarketID)
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) { // Corrected to database.ErrNotFound
 			return nil, fmt.Errorf("%w: market %s not found when fetching", ErrMarketNotFound, b.MarketID.String())
@@ -122,14 +127,14 @@ func (b *BuyNo) Execute(
 	}
 
 	// 5. Credit NO shares to actor
-	currentNoShares, err := storage.GetShareBalance(ctx, mu, marketIDUint64, actor, userConsts.NoShareType)
+	currentNoShares, err := storage.GetShareBalance(ctx, mu, b.MarketID, actor, userConsts.NoShareType)
 	if err != nil && !errors.Is(err, database.ErrNotFound) { // Corrected to database.ErrNotFound, treat as 0 shares
 		// Consider reverting native token balance change here or using a more transactional approach
 		return nil, fmt.Errorf("failed to get current NO share balance for actor %s, market %s: %w", actor.String(), b.MarketID.String(), err)
 	}
 
 	newShareBalance := currentNoShares + b.Amount
-	if err := storage.SetShareBalance(ctx, mu, marketIDUint64, actor, userConsts.NoShareType, newShareBalance); err != nil {
+	if err := storage.SetShareBalance(ctx, mu, b.MarketID, actor, userConsts.NoShareType, newShareBalance); err != nil {
 		// Consider reverting native token balance change here
 		return nil, fmt.Errorf("failed to set new NO share balance %d for actor %s, market %s: %w", newShareBalance, actor.String(), b.MarketID.String(), err)
 	}
@@ -138,7 +143,20 @@ func (b *BuyNo) Execute(
 
 	// TODO: Emit event for BuyNo action
 
-	return nil, nil // Success
+	// Create and marshal the result
+	result := &BuyNoResult{
+		SharesBought: b.Amount,
+		CostPaid:     cost, // 'cost' was calculated earlier in the function
+	}
+
+	packer := codec.NewWriter(MaxBuyNoResultSize, MaxBuyNoResultSize) // initialSliceCap, maxSliceCap
+	packer.PackByte(result.GetTypeID()) // Prepend the TypeID
+	result.MarshalCodec(packer) // Marshal the result struct
+	if packer.Err() != nil {
+		return nil, fmt.Errorf("failed to marshal BuyNoResult for market %s: %w", b.MarketID.String(), packer.Err())
+	}
+
+	return packer.Bytes(), nil // Success
 }
 
 // ComputeUnits implements chain.Action

@@ -1,10 +1,10 @@
 package actions
 
 import (
-	"github.com/chokosabe/predictionvm/escrow"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/chokosabe/predictionvm/escrow"
 
 	"github.com/ava-labs/avalanchego/database" // For database.ErrNotFound
 	"github.com/ava-labs/avalanchego/ids"
@@ -22,8 +22,6 @@ const (
 	initialMarketBufferSize       = 256             // Estimate
 	initialCreateMarketBufferSize = 512             // Estimate, Question can be long
 
-	// CreateMarketComputeUnits reflects state reads (checking if market ID exists) and writes (new market, creator balance if fees apply)
-	CreateMarketComputeUnits = 2000 // Placeholder
 	MaxCreateMarketSize      = 1024 // Placeholder, depends on description length and oracle parameters
 	MaxQuestionLength        = 256
 	PrefixMarket             = 0x00
@@ -148,8 +146,8 @@ func (cm *CreateMarket) UnmarshalCodec(p *codec.Packer) error {
 	return p.Err()
 }
 
-func (*CreateMarket) GetTypeID() uint8 {
-	return pvmconsts.CreateMarketID // Assuming CreateMarketID is defined in consts package
+func (cm *CreateMarket) GetTypeID() uint8 {
+	return CreateMarketType
 }
 
 // Bytes serializes the CreateMarket action.
@@ -286,7 +284,16 @@ func (cm *CreateMarket) Execute(
 		return nil, fmt.Errorf("failed to lock initial liquidity for market %s (market removed): %w", market.ID, err)
 	}
 
-	return actionID[:], nil // Return actionID as success result ID (actionID) as a byte slice
+	result := &CreateMarketResult{MarketID: actionID}
+	packer := codec.NewWriter(64, int(defaultMaxSize)) // Estimate buffer size (1 byte TypeID + 32 bytes MarketID + some overhead)
+	packer.PackByte(result.GetTypeID()) // Important: Pack the TypeID of the result for the OutputParser
+	if err := result.MarshalCodec(packer); err != nil {
+		return nil, fmt.Errorf("failed to marshal CreateMarketResult: %w", err)
+	}
+	if packer.Err() != nil {
+		return nil, fmt.Errorf("packer error after marshaling CreateMarketResult: %w", packer.Err())
+	}
+	return packer.Bytes(), nil
 }
 
 // ValidRange defines the time range during which the action is valid.

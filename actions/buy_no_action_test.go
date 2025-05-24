@@ -46,7 +46,7 @@ func TestBuyNo_Execute_Success(t *testing.T) {
 
 	// 2. Create and store a market
 	market := &storage.Market{
-		ID:                marketID_uint64, // storage.Market uses uint64 for ID
+		ID:                marketID_ids, // storage.Market now uses ids.ID for ID
 		Question:          "Test Market for BuyNo",
 		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       200, // Market closes at time 200
@@ -77,24 +77,37 @@ func TestBuyNo_Execute_Success(t *testing.T) {
 
 	// 5. Assertions for successful execution
 	require.NoError(err)
-	require.Nil(output) // Expect nil output on success
+	require.NotNil(output) // Expect non-nil output
 	// ComputeUnits currently returns 0, this assertion might change if ComputeUnits logic evolves
 	require.Equal(uint64(0), units)
 
+	// Manually unmarshal the output into BuyNoResult
+	require.NotEmpty(output, "Output should not be empty")
+	// The first byte is the type ID, UnmarshalCodec expects the rest.
+	resultBytes := output[1:]
+	packer := codec.NewReader(resultBytes, len(resultBytes))
+
+	buyNoResult := &BuyNoResult{}
+	require.NoError(buyNoResult.UnmarshalCodec(packer), "Failed to unmarshal output into BuyNoResult")
+
+	// Assert the fields of BuyNoResult
+	// 'expectedCost' is calculated further down, ensure consistency here
+	require.Equal(amountToBuy, buyNoResult.SharesBought, "BuyNoResult.SharesBought should match amountToBuy")
 	// Check user's native token balance
 	expectedCost := amountToBuy * maxPriceOrCollateral
+	require.Equal(expectedCost, buyNoResult.CostPaid, "BuyNoResult.CostPaid should match expectedCost")
 	expectedFinalUserBalance := initialUserBalance - expectedCost
 	finalUserBalance, getBalErr := storage.GetBalance(ctx, mu, senderAddr)
 	require.NoError(getBalErr)
 	require.Equal(expectedFinalUserBalance, finalUserBalance, "User balance should be correctly deducted")
 
 	// Check user's NO share balance
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.NoShareType)
 	require.NoError(getShareErr)
 	require.Equal(amountToBuy, userNoShares, "User should have the correct amount of NO shares")
 
 	// Check market's total NO shares
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 	// Ensure TotalYesShares remains unchanged
@@ -154,7 +167,7 @@ func TestBuyNo_Execute_Error_MarketNotFound(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's NO share balance (should be 0, and fetching might error if key never created)
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, nonExistentMarketID_uint64, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, nonExistentMarketID_ids, senderAddr, userConsts.NoShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares if key doesn't exist")
 		require.Equal(uint64(0), userNoShares, "User NO shares should be 0 if error is ErrNotFound")
@@ -185,7 +198,7 @@ func TestBuyNo_Execute_Error_MarketResolved(t *testing.T) {
 	maxPrice := uint64(50)
 
 	marketBase := &storage.Market{
-		ID:                marketID_uint64, // storage.Market uses uint64 for ID
+		ID:                marketID_ids, // storage.Market now uses ids.ID for ID
 		Question:          "Test Market Resolved",
 		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       200,
@@ -245,7 +258,7 @@ func TestBuyNo_Execute_Error_MarketResolved(t *testing.T) {
 			require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 			// Check user's NO share balance (should be 0)
-			userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
+			userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.NoShareType)
 			if getShareErr != nil {
 				require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 				require.Equal(uint64(0), userNoShares)
@@ -254,7 +267,7 @@ func TestBuyNo_Execute_Error_MarketResolved(t *testing.T) {
 			}
 
 			// Check market's total NO shares (should be unchanged)
-			updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
+			updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids)
 			require.NoError(getMarketErr)
 			require.NotNil(updatedMarket)
 				})
@@ -289,7 +302,7 @@ func TestBuyNo_Execute_Error_InsufficientFunds(t *testing.T) {
 
 	// 2. Create and store an open market
 	market := &storage.Market{
-		ID:                marketID_uint64, // storage.Market uses uint64 for ID
+		ID:                marketID_ids, // storage.Market now uses ids.ID for ID
 		Question:          "Test Market Insufficient Funds",
 		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       200,
@@ -331,7 +344,7 @@ func TestBuyNo_Execute_Error_InsufficientFunds(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's NO share balance (should be 0)
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.NoShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userNoShares)
@@ -340,7 +353,7 @@ func TestBuyNo_Execute_Error_InsufficientFunds(t *testing.T) {
 	}
 
 	// Check market's total NO shares (should be unchanged)
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }
@@ -451,7 +464,7 @@ func TestBuyNo_Execute_Error_NoBalanceRecord_InsufficientFunds(t *testing.T) {
 
 	// 1. Create and store an open market (needed for the action to proceed past market checks)
 	market := &storage.Market{
-		ID:                marketID_uint64,
+		ID:                marketID_ids,
 		Question:          "Test Market No Balance Record",
 		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       200,
@@ -500,7 +513,7 @@ func TestBuyNo_Execute_Error_NoBalanceRecord_InsufficientFunds(t *testing.T) {
 	}
 
 	// Check user's NO share balance (should be 0)
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.NoShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userNoShares)
@@ -509,7 +522,7 @@ func TestBuyNo_Execute_Error_NoBalanceRecord_InsufficientFunds(t *testing.T) {
 	}
 
 	// Check market's total NO shares (should be unchanged)
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }
@@ -542,7 +555,7 @@ func TestBuyNo_Execute_Error_MarketTradingClosed(t *testing.T) {
 
 	// 2. Create and store the market with TradingClosed status
 	market := &storage.Market{
-		ID:                marketID_uint64,
+		ID:                marketID_ids,
 		Question:          "Test Market Trading Closed",
 		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       200, // Ensure ClosingTime is in the future relative to txTimestamp
@@ -582,7 +595,7 @@ func TestBuyNo_Execute_Error_MarketTradingClosed(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's NO share balance (should be 0)
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.NoShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userNoShares)
@@ -591,7 +604,7 @@ func TestBuyNo_Execute_Error_MarketTradingClosed(t *testing.T) {
 	}
 
 	// Check market's total NO shares (should be unchanged)
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }
@@ -625,7 +638,7 @@ func TestBuyNo_Execute_Error_MarketEndTimePassed(t *testing.T) {
 
 	// 2. Create and store the market with EndTime in the past
 	market := &storage.Market{
-		ID:                marketID_uint64,
+		ID:                marketID_ids,
 		Question:          "Test Market EndTime Passed",
 		CollateralAssetID: collateralAssetID_test,
 		ClosingTime:       50,  // txTimestamp (100) > ClosingTime (50)
@@ -665,7 +678,7 @@ func TestBuyNo_Execute_Error_MarketEndTimePassed(t *testing.T) {
 	require.Equal(initialUserBalance, finalUserBalance, "User balance should remain unchanged")
 
 	// Check user's NO share balance (should be 0)
-	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_uint64, senderAddr, userConsts.NoShareType)
+	userNoShares, getShareErr := storage.GetShareBalance(ctx, mu, marketID_ids, senderAddr, userConsts.NoShareType)
 	if getShareErr != nil {
 		require.ErrorIs(getShareErr, database.ErrNotFound, "Expected ErrNotFound or 0 shares")
 		require.Equal(uint64(0), userNoShares)
@@ -674,7 +687,7 @@ func TestBuyNo_Execute_Error_MarketEndTimePassed(t *testing.T) {
 	}
 
 	// Check market's total NO shares (should be unchanged)
-	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_uint64)
+	updatedMarket, getMarketErr := storage.GetMarket(ctx, mu, marketID_ids)
 	require.NoError(getMarketErr)
 	require.NotNil(updatedMarket)
 }

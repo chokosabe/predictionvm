@@ -41,17 +41,22 @@ func init() {
 
 	if err := errors.Join(
 		// PredictionVM Actions
+		ActionParser.Register(&actions.CreateMarket{}, nil), // Uses CreateMarket.Unmarshal method
 		ActionParser.Register(&actions.BuyYes{}, actions.UnmarshalBuyYes),
-		// ActionParser.Register(&actions.BuyNo{}, nil),    // TODO: Implement BuyNo action and unmarshaler
-		// ActionParser.Register(&actions.Claim{}, nil),     // TODO: Implement Claim action and unmarshaler
-		// ActionParser.Register(&actions.Resolve{}, nil),   // TODO: Implement Resolve action and unmarshaler
+		ActionParser.Register(&actions.BuyNo{}, nil),    // Uses BuyNo.Unmarshal method
+		ActionParser.Register(&actions.Claim{}, actions.UnmarshalClaim),
+		ActionParser.Register(&actions.Resolve{}, actions.UnmarshalResolve),
 
 		// Standard Auth Types
 		AuthParser.Register(&auth.ED25519{}, auth.UnmarshalED25519),
 		AuthParser.Register(&auth.SECP256R1{}, auth.UnmarshalSECP256R1),
 		AuthParser.Register(&auth.BLS{}, auth.UnmarshalBLS),
 
-		// OutputParser.Register(...) // TODO: Register any custom outputs for predictionvm if needed
+		OutputParser.Register(&actions.CreateMarketResult{}, nil), // Register CreateMarketResult
+		OutputParser.Register(&actions.BuyYesResult{}, nil),       // Register BuyYesResult
+		OutputParser.Register(&actions.BuyNoResult{}, nil),        // Register BuyNoResult
+		OutputParser.Register(&actions.ResolveResult{}, nil),      // Register ResolveResult
+		OutputParser.Register(&actions.ClaimResult{}, nil),        // Register ClaimResult
 	); err != nil {
 		panic(err)
 	}

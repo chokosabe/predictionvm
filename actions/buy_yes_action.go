@@ -33,7 +33,6 @@ type BuyYes struct {
 var (
 	ErrAmountCannotBeZero   = errors.New("amount cannot be zero")
 	ErrMaxPriceCannotBeZero = errors.New("max price cannot be zero")
-	ErrMarketNotFound       = errors.New("market not found")
 	ErrMarketInteraction    = errors.New("market interaction error") // Generic for resolved, cancelled, ended
 	ErrInsufficientFunds    = errors.New("insufficient funds")
 	ErrMarketEndTimePassed  = errors.New("market end time passed")
@@ -86,7 +85,7 @@ func (b *BuyYes) Execute(
 	}
 
 	// 1. Check if market exists and is active
-	market, err := storage.GetMarket(ctx, mu, uint64(b.MarketID[0])) // Convert ids.ID to uint64
+	market, err := storage.GetMarket(ctx, mu, b.MarketID)
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) {
 			return nil, fmt.Errorf("%w: market %s not found when fetching", ErrMarketNotFound, b.MarketID.String())
@@ -147,7 +146,7 @@ func (b *BuyYes) Execute(
 	}
 
 	// 5. Credit YES shares to actor
-	currentYesShares, err := storage.GetShareBalance(ctx, mu, uint64(b.MarketID[0]), actor, userConsts.YesShareType) // Convert ids.ID to uint64
+	currentYesShares, err := storage.GetShareBalance(ctx, mu, b.MarketID, actor, userConsts.YesShareType)
 	// Allow ErrNotFound for initial share balance, in which case currentShareBalance defaults to 0 (uint64)
 	if err != nil && !errors.Is(err, database.ErrNotFound) {
 		// Consider reverting native token balance change here or using a more transactional approach
@@ -155,15 +154,28 @@ func (b *BuyYes) Execute(
 	}
 
 	newShareBalance := currentYesShares + b.Amount
-	if err := storage.SetShareBalance(ctx, mu, uint64(b.MarketID[0]), actor, userConsts.YesShareType, newShareBalance); err != nil { // Convert ids.ID to uint64
+	if err := storage.SetShareBalance(ctx, mu, b.MarketID, actor, userConsts.YesShareType, newShareBalance); err != nil {
 		// Consider reverting native token balance change here
 		return nil, fmt.Errorf("failed to set new share balance %d for actor %s, market %d, type YES: %w", newShareBalance, actor.String(), b.MarketID, err)
 	}
 
 	// TotalYesShares is now managed by the HybridAsset module, no direct update here.
 
-	// For now, return nil output and no error for success
-	return nil, nil
+	// Prepare and return the result
+	result := &BuyYesResult{
+		SharesBought: b.Amount,
+		CostPaid:     cost, // cost was calculated earlier
+	}
+
+	packer := codec.NewWriter(128, int(defaultMaxSize)) // Estimate buffer: 1 byte TypeID + 8 bytes SharesBought + 8 bytes CostPaid + overhead
+	packer.PackByte(result.GetTypeID())
+	if err := result.MarshalCodec(packer); err != nil {
+		return nil, fmt.Errorf("failed to marshal BuyYesResult: %w", err)
+	}
+	if packer.Err() != nil {
+		return nil, fmt.Errorf("packer error after marshaling BuyYesResult: %w", packer.Err())
+	}
+	return packer.Bytes(), nil
 }
 
 // ComputeUnits implements chain.Action
