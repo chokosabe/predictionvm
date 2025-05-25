@@ -1,0 +1,65 @@
+#####
+# Stage 1: Get precompiled avalanchego
+#####
+ARG AVALANCHEGO_DOCKER_TAG=d366a137 # From hypersdk-starter-kit Dockerfile.devnet
+FROM avaplatform/avalanchego:${AVALANCHEGO_DOCKER_TAG} AS avalanchego_builder
+
+#####
+# Stage 2: Build PredictionVM
+#####
+FROM golang:1.23-bookworm AS builder
+
+# Arguments for versions and paths
+ARG AVALANCHEGO_VERSION_SEMVER=v1.11.12-rc.2 # From hypersdk-starter-kit Dockerfile.devnet
+ENV HYPERSDK_DIR_PATH /root/.hypersdk
+ENV AVALANCHEGO_INSTALL_PATH ${HYPERSDK_DIR_PATH}/avalanchego-${AVALANCHEGO_VERSION_SEMVER}
+ENV AVALANCHEGO_EXEC_PATH ${AVALANCHEGO_INSTALL_PATH}/avalanchego
+ENV AVALANCHEGO_PLUGINS_DIR ${AVALANCHEGO_INSTALL_PATH}/plugins
+
+# Install build tools (gcc, make), cmake, curl, and git
+RUN apt-get update && apt-get install -y build-essential cmake curl git && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# CGO must be enabled for blst
+ENV CGO_ENABLED=1
+
+# It's good practice to set GOMODCACHE and GOCACHE to benefit from Docker layer caching for Go modules/builds
+ENV GOMODCACHE=/go/pkg/mod
+ENV GOCACHE=/root/.cache/go-build
+
+WORKDIR /app
+
+# Copy avalanchego binary from the first stage
+RUN mkdir -p ${AVALANCHEGO_INSTALL_PATH}
+COPY --from=avalanchego_builder /avalanchego/build/avalanchego ${AVALANCHEGO_EXEC_PATH}
+
+WORKDIR /app
+
+# Copy Go module files and download dependencies
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy the rest of the application source code
+COPY . .
+
+# Remove the local vendor directory to force go build to use the module cache
+RUN rm -rf ./vendor
+
+# Build the PredictionVM plugin
+# Replace PREDICTIONVM_ID with the actual ID for 'predictionvm'
+# You can generate this ID. For example, in Go: ids.GenerateTestID("predictionvm").String()
+# For now, using a placeholder. This needs to be accurate.
+ARG PREDICTIONVM_ID=2YnmQD1F6XYx45WTv84R5ar7WDbqzW9pNP4gENbGo6oSJ29QfC
+RUN mkdir -p ${AVALANCHEGO_PLUGINS_DIR} && \
+    go build -o ${AVALANCHEGO_PLUGINS_DIR}/${PREDICTIONVM_ID} ./cmd/predictionvm
+
+# Copy custom run and stop scripts
+COPY ./scripts/run-predictionvm.sh /app/scripts/run-predictionvm.sh
+COPY ./scripts/stop-predictionvm.sh /app/scripts/stop-predictionvm.sh
+RUN chmod +x /app/scripts/*.sh
+
+# Expose the RPC port
+EXPOSE 9650
+
+# Set the entrypoint
+# This will keep the container running after the node starts
+ENTRYPOINT ["/bin/bash", "-c", "/app/scripts/stop-predictionvm.sh; /app/scripts/run-predictionvm.sh && echo 'PredictionVM devnet started' && tail -f /dev/null"]

@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  predictionvm_node:
+    container_name: predictionvm_node
+    build:
+      context: .
+      dockerfile: Dockerfile.predictionvm
+      args:
+        # The PREDICTIONVM_ID is already hardcoded in Dockerfile.predictionvm's build step for the plugin
+        # but can be passed here if needed for other ARG directives in Dockerfile.
+        # PREDICTIONVM_ID: "2YnmQD1F6XYx45WTv84R5ar7WDbqzW9pNP4gENbGo6oSJ29QfC"
+        AVALANCHEGO_DOCKER_TAG: "d366a137" # Matches Dockerfile.predictionvm
+        AVALANCHEGO_VERSION_SEMVER: "v1.11.12-rc.2" # Matches Dockerfile.predictionvm
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9650:9650" # RPC
+      - "127.0.0.1:9651:9651" # Staking (though staking is disabled in run script for now)
+    volumes:
+      # Named volumes for Go module and build caches to speed up subsequent builds.
+      # These are particularly useful for local development if you rebuild the image often.
+      - predictionvm_go_mod:/go/pkg/mod
+      - predictionvm_go_build:/root/.cache/go-build
+      # You can also mount the data directory to persist chain data across container restarts:
+      # - predictionvm_data:/root/.hypersdk/data
+    environment:
+      # Pass necessary environment variables that run-predictionvm.sh might use.
+      # The script currently sources these from Dockerfile ENVs, but can be explicit here.
+      - HYPERSDK_DIR_PATH=/root/.hypersdk # Matches Dockerfile & run script
+      - AVALANCHEGO_VERSION_SEMVER=v1.11.12-rc.2 # Matches Dockerfile & run script
+    healthcheck:
+      # This healthcheck tries to query the P-Chain's height via the /ext/info endpoint.
+      # A more specific healthcheck would be to query your VM's custom endpoint.
+      # Example for PredictionVM (assuming 'predictionapi' prefix and 'Genesis' method):
+      test: ["CMD", "curl", "-X", "POST", "--data", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"predictionapi.Genesis\",\"params\":{}}", "http://localhost:9650/ext/bc/2YnmQD1F6XYx45WTv84R5ar7WDbqzW9pNP4gENbGo6oSJ29QfC/predictionapi"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s # Give the node ample time to start up, generate genesis, etc.
+
+volumes:
+  predictionvm_go_mod:
+  predictionvm_go_build:
+  # predictionvm_data: # Uncomment if you want to persist chain data
